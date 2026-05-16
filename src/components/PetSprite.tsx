@@ -38,24 +38,34 @@ export function PetSprite({
   const row = moodToRow(visualMood);
 
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="absolute select-none"
+    <div
+      className="absolute"
       style={{
-        left: pet.x,
-        top: pet.y,
-        width: FRAME_SIZE,
-        height: FRAME_SIZE,
-        backgroundImage: `url(${typeToSheet(pet.type)})`,
-        backgroundRepeat: "no-repeat",
-        backgroundSize: `${SHEET_SIZE}px ${SHEET_SIZE}px`,
-        backgroundPositionY: `${-row * FRAME_SIZE}px`,
-        animation: "lmPetsSpriteX 700ms steps(5) infinite",
-        transform: pet.vx < 0 ? "scaleX(-1)" : undefined,
+        left: 0,
+        top: 0,
+        transform: `translate3d(${pet.x}px, ${pet.y}px, 0)`,
+        transition: "transform 80ms linear",
+        willChange: "transform",
+        zIndex: Math.floor(pet.y),
       }}
-      aria-label={`Mascota ${pet.name}`}
-      title={pet.name}
-    />
+    >
+      <button
+        type="button"
+        onClick={onClick}
+        className="block select-none focus:outline-none"
+        style={{
+          width: FRAME_SIZE,
+          height: FRAME_SIZE,
+          backgroundImage: `url(${typeToSheet(pet.type)})`,
+          backgroundRepeat: "no-repeat",
+          backgroundSize: `${SHEET_SIZE}px ${SHEET_SIZE}px`,
+          backgroundPositionY: `${-row * FRAME_SIZE}px`,
+          animation: "lmPetsSpriteX 700ms steps(5) infinite",
+          transform: pet.vx < 0 ? "scaleX(-1)" : "scaleX(1)",
+        }}
+        aria-label={`Mascota ${pet.name}`}
+        title={pet.name}
+      />
+    </div>
   );
 }

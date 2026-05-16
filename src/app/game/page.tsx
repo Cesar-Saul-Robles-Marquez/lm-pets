@@ -22,9 +22,32 @@ import type { Inventory } from "@/lib/storage";
 
 const MAX_PETS = 10;
 const PET_SIZE = 100;
-const STEP_MS = 50; // 20 FPS simulation
+const STEP_MS = 16.666; // 60 FPS simulation
 const CAMERA_SCALE_SELECTED = 1.7;
 const FENCE_CAMERA_SCALE = CAMERA_SCALE_SELECTED;
+
+function polarToCartesian(centerX: number, centerY: number, radius: number, angleInDegrees: number) {
+  const angleInRadians = (angleInDegrees - 90) * Math.PI / 180.0;
+  return {
+    x: centerX + (radius * Math.cos(angleInRadians)),
+    y: centerY + (radius * Math.sin(angleInRadians))
+  };
+}
+
+function describeArc(x: number, y: number, radius: number, startAngle: number, endAngle: number) {
+  if (Math.abs(endAngle - startAngle) >= 360) {
+    endAngle -= 0.01;
+  }
+  const start = polarToCartesian(x, y, radius, endAngle);
+  const end = polarToCartesian(x, y, radius, startAngle);
+  const largeArcFlag = endAngle - startAngle <= 180 ? "0" : "1";
+  return [
+    "M", start.x, start.y,
+    "A", radius, radius, 0, largeArcFlag, 0, end.x, end.y,
+    "L", x, y,
+    "Z"
+  ].join(" ");
+}
 
 function StatBar({ value }: { value: number }) {
   const v = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
@@ -183,17 +206,20 @@ export default function GamePage() {
           let hunger = p.hunger;
           let moodStat = p.moodStat;
 
-          // Simple life-sim stats.
-          // Tuned to be slower: hunger reaches 50% in ~5 minutes.
-          hunger = clamp(hunger + 0.008, 0, 100);
-          energy = clamp(energy - 0.005, 0, 100);
+          // Simple life-sim stats, adjusted for dt (step in seconds)
+          // 0.16 per second to match old 0.008 per 50ms
+          const hungerRate = 0.16 * step;
+          hunger = clamp(hunger + hungerRate, 0, 100);
+          
+          const energyRate = 0.1 * step;
+          energy = clamp(energy - energyRate, 0, 100);
 
-          const hungryPenalty = hunger > 70 ? 0.015 : 0;
-          const tiredPenalty = energy < 30 ? 0.012 : 0;
-          const baseline = 0.002;
+          const hungryPenalty = hunger > 70 ? 0.3 * step : 0;
+          const tiredPenalty = energy < 30 ? 0.24 * step : 0;
+          const baseline = 0.04 * step;
 
           moodStat = clamp(moodStat - (baseline + hungryPenalty + tiredPenalty), 0, 100);
-          if (p.mood === "happy") moodStat = clamp(moodStat + 0.03, 0, 100);
+          if (p.mood === "happy") moodStat = clamp(moodStat + 0.6 * step, 0, 100);
 
           return { ...p, energy, hunger, moodStat };
         });
@@ -484,7 +510,7 @@ export default function GamePage() {
                 ? `translate(${cameraTx}px, ${cameraTy}px) scale(${cameraScale})`
                 : "none",
               transformOrigin: "0 0",
-              transition: "transform 260ms ease-out",
+              transition: "transform 400ms cubic-bezier(0.2, 0.8, 0.2, 1)",
               willChange: "transform",
             }}
           >
@@ -501,13 +527,16 @@ export default function GamePage() {
               <div
                 className="absolute"
                 style={{
-                  left: selectedPet.x + PET_SIZE - 16,
-                  top: selectedPet.y + 8,
+                  left: 0,
+                  top: 0,
+                  transform: `translate3d(${selectedPet.x - 60}px, ${selectedPet.y - 20}px, 0)`,
+                  transition: "transform 80ms linear",
+                  willChange: "transform",
                 }}
               >
                 <button
                   type="button"
-                  className="h-9 w-9 rounded-full border border-emerald-200 bg-white text-emerald-900 shadow-sm hover:bg-emerald-50"
+                  className="relative z-10 h-9 w-9 rounded-full border border-emerald-200 bg-white text-emerald-900 shadow-sm hover:bg-emerald-50"
                   onPointerDown={(ev) => {
                     if (availableFoods.length === 0) {
                       setFoodWheelOpen(true);
@@ -558,51 +587,72 @@ export default function GamePage() {
                     strokeLinejoin="round"
                     aria-hidden="true"
                   >
-                    <path d="M6 3v7" />
-                    <path d="M10 3v7" />
-                    <path d="M6 6h4" />
-                    <path d="M14 3v7c0 1.1.9 2 2 2h0" />
-                    <path d="M16 12v9" />
+                    <path d="M17 10c.7-.7 1.69 0 2.5 0a2.5 2.5 0 1 0 0-5 .5.5 0 0 1-.5-.5 2.5 2.5 0 1 0-5 0c0 .81.7 1.8 0 2.5l-5.3 5.3c-.7.7-1.69 0-2.5 0a2.5 2.5 0 0 0 0 5c0 .28.22.5.5.5a2.5 2.5 0 1 0 5 0c0-.81-.7-1.8 0-2.5l5.3-5.3Z" />
                   </svg>
                 </button>
 
                 {foodWheelOpen ? (
-                  <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-                    <div ref={foodWheelRef} className="relative h-40 w-40">
-                      <div className="absolute left-1/2 top-1/2 h-10 w-10 -translate-x-1/2 -translate-y-1/2 rounded-full border border-emerald-200 bg-white shadow-sm" />
+                  <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50">
+                    <div ref={foodWheelRef} className="relative h-48 w-48 drop-shadow-2xl" style={{ pointerEvents: 'none' }}>
+                      <svg viewBox="0 0 240 240" className="absolute inset-0 w-full h-full">
+                        <defs>
+                          <mask id="gta-hole">
+                            <rect width="240" height="240" fill="white" />
+                            <circle cx="120" cy="120" r="40" fill="black" />
+                          </mask>
+                        </defs>
+                        <g mask="url(#gta-hole)">
+                          {availableFoods.length === 0 ? (
+                             <circle cx="120" cy="120" r="120" fill="rgba(2, 44, 34, 0.85)" />
+                          ) : availableFoods.length === 1 ? (
+                             <circle cx="120" cy="120" r="120" fill={foodWheelHover === availableFoods[0].id ? "rgba(16, 185, 129, 0.95)" : "rgba(2, 44, 34, 0.85)"} className="transition-colors duration-200" />
+                          ) : (
+                            availableFoods.map((food, idx) => {
+                              const n = availableFoods.length;
+                              const sector = 360 / n;
+                              const startAngle = idx * sector + 1;
+                              const endAngle = (idx + 1) * sector - 1;
+                              const active = foodWheelHover === food.id;
+                              const d = describeArc(120, 120, 120, startAngle, endAngle);
+                              return (
+                                <path
+                                  key={food.id}
+                                  d={d}
+                                  fill={active ? "rgba(16, 185, 129, 0.95)" : "rgba(2, 44, 34, 0.85)"}
+                                  className="transition-colors duration-200"
+                                />
+                              );
+                            })
+                          )}
+                        </g>
+                        <circle cx="120" cy="120" r="119" fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="2" mask="url(#gta-hole)" />
+                        <circle cx="120" cy="120" r="41" fill="none" stroke="rgba(255,255,255,0.2)" strokeWidth="2" />
+                      </svg>
 
                       {availableFoods.length === 0 ? (
-                        <div className="absolute left-1/2 top-1/2 w-36 -translate-x-1/2 -translate-y-1/2 rounded-md border border-emerald-200 bg-white p-2 text-center text-xs text-emerald-950/70 shadow-sm">
-                          No tienes comida.
+                        <div className="absolute inset-0 flex items-center justify-center p-4 text-center text-xs font-medium text-emerald-50">
+                          Vacío
                         </div>
                       ) : (
                         availableFoods.map((food, idx) => {
                           const n = availableFoods.length;
-                          const angle = -90 + (360 / n) * idx;
-                          const radius = 62;
-                          const count = inventory[food.id] ?? 0;
-                          const active = foodWheelHover === food.id;
+                          const sector = 360 / n;
+                          const angle = idx * sector + sector / 2;
+                          const pos = polarToCartesian(50, 50, 32.5, angle);
                           return (
-                            <button
+                            <div
                               key={food.id}
-                              type="button"
-                              className={
-                                "absolute left-1/2 top-1/2 h-12 w-12 -translate-x-1/2 -translate-y-1/2 rounded-full border bg-white shadow-sm " +
-                                (active
-                                  ? "border-emerald-500 ring-2 ring-emerald-500/30"
-                                  : "border-emerald-200")
-                              }
+                              className="absolute"
                               style={{
-                                transform: `translate(-50%, -50%) rotate(${angle}deg) translate(${radius}px) rotate(${-angle}deg)`,
+                                left: `${pos.x}%`,
+                                top: `${pos.y}%`,
+                                transform: "translate(-50%, -50%)",
+                                pointerEvents: "auto",
                               }}
-                              onClick={() => {
-                                // Fallback for tap/click without holding.
-                                feedSelected(food.id);
-                              }}
-                              title={food.name}
+                              onClick={() => feedSelected(food.id)}
                             >
                               <div
-                                className="mx-auto h-8 w-8 rounded border border-emerald-200 bg-white"
+                                className="h-11 w-11 mx-auto"
                                 style={{
                                   backgroundImage: `url(${FOOD_SPRITESHEET_URL})`,
                                   backgroundRepeat: "no-repeat",
@@ -610,13 +660,16 @@ export default function GamePage() {
                                   backgroundPosition: `${food.sprite.col === 0 ? "0%" : "100%"} ${
                                     food.sprite.row === 0 ? "0%" : "100%"
                                   }`,
+                                  filter: foodWheelHover === food.id ? "drop-shadow(0 0 8px rgba(255,255,255,0.8))" : "drop-shadow(0 2px 4px rgba(0,0,0,0.5))",
+                                  transform: foodWheelHover === food.id ? "scale(1.2)" : "scale(1)",
+                                  transition: "transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1), filter 200ms ease",
                                 }}
                                 aria-hidden="true"
                               />
-                              <div className="absolute -bottom-1 -right-1 rounded-full border border-emerald-200 bg-white px-1 text-[10px] text-emerald-950">
-                                {count}
+                              <div className="absolute -bottom-1 -right-1 rounded-full border border-white/20 bg-emerald-950/90 px-1.5 py-0.5 text-[10px] font-bold text-white shadow-sm">
+                                {inventory[food.id] ?? 0}
                               </div>
-                            </button>
+                            </div>
                           );
                         })
                       )}
@@ -635,9 +688,9 @@ export default function GamePage() {
         </div>
       </div>
 
-      {/* Selected pet stats (bottom-right) */}
+      {/* Selected pet stats (bottom-left) */}
       {selectedPet ? (
-        <div className="fixed bottom-4 right-4 z-40 w-[min(92vw,260px)] rounded-xl border border-emerald-200 bg-white p-3 text-emerald-950 shadow-sm">
+        <div className="fixed bottom-4 left-4 z-40 w-[min(92vw,260px)] rounded-xl border border-emerald-200 bg-white p-3 text-emerald-950 shadow-sm">
           <div className="text-sm font-semibold">{selectedPet.name}</div>
           <div className="text-[11px] text-emerald-950/70">{selectedPet.type}</div>
 
