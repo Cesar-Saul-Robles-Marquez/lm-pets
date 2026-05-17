@@ -97,8 +97,9 @@ function migrateLegacyUsersToSlotsIfNeeded() {
       window.localStorage.setItem(ACTIVE_SLOT_KEY, String(idx));
     }
   }
-
-  notifyStorageChange();
+  // IMPORTANT: no notifyStorageChange() here.
+  // This function is called from read paths (e.g. getSaveSlots -> useSyncExternalStore snapshot),
+  // and dispatching events during render can cause React warnings.
 }
 
 export function getSaveSlots(): Array<string | null> {
