@@ -1,5 +1,28 @@
-export type PetType = "peyo" | "micha";
+export type PetType = "peyo" | "micha" | "kiwi";
 export type PetMood = "walk" | "happy" | "hungry" | "sleep" | "angry";
+
+export type BedColor =
+  | 0
+  | 1
+  | 2
+  | 3
+  | 4
+  | 5
+  | 6
+  | 7
+  | 8
+  | 9
+  | 10
+  | 11;
+
+export type Bed = {
+  id: string;
+  // World-space coordinates (same space as pet.x/pet.y). Null = not placed yet.
+  x: number | null;
+  y: number | null;
+  ownerPetId: string | null;
+  color: BedColor;
+};
 
 export type Pet = {
   id: string;

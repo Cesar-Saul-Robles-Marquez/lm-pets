@@ -2,26 +2,29 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
-import type { Pet, PetMood, PetType } from "@/lib/types";
+import type { Bed, BedColor, Pet, PetMood, PetType } from "@/lib/types";
 import {
   clearActiveUser,
   getPetsForSlot,
   getTutorialSeenForSlot,
+  setBedsForSlot,
   setInventoryForSlot,
   setPetsForSlot,
   setTutorialSeenForSlot,
 } from "@/lib/storage";
 import { makeId } from "@/lib/id";
 import { petStore } from "@/lib/petStore";
-import { activeInventoryStore, activeSlotStore, activeUserStore } from "@/lib/localStores";
+import { activeBedsStore, activeInventoryStore, activeSlotStore, activeUserStore } from "@/lib/localStores";
 import { GameTopMenu } from "@/components/GameTopMenu";
 import { PetSprite } from "@/components/PetSprite";
 import { TutorialOverlay } from "@/components/TutorialOverlay";
 import { FOODS, FOOD_SPRITESHEET_URL, type FoodId, feedPetWithFood } from "@/lib/foods";
-import type { Inventory } from "@/lib/storage";
+import { BED_GRID_COLS, BED_GRID_ROWS, BED_SHOP_DEFAULT_COLOR, BED_SPRITESHEET_URL, bedBackgroundPosition, bedColorToCell } from "@/lib/beds";
+import type { Beds, Inventory } from "@/lib/storage";
 
 const MAX_PETS = 10;
 const PET_SIZE = 100;
+const BED_SIZE = 88;
 const STEP_MS = 16.666; // 60 FPS simulation
 const CAMERA_SCALE_SELECTED = 1.7;
 const FENCE_CAMERA_SCALE = CAMERA_SCALE_SELECTED;
@@ -104,8 +107,32 @@ export default function GamePage() {
     activeInventoryStore.getSnapshot,
     activeInventoryStore.getServerSnapshot
   );
+
+  const beds = useSyncExternalStore(
+    activeBedsStore.subscribe,
+    activeBedsStore.getSnapshot,
+    activeBedsStore.getServerSnapshot
+  );
+  const bedsRef = useRef<Beds>(beds);
+
   const [shopOpen, setShopOpen] = useState<boolean>(false);
-  const [shopTab, setShopTab] = useState<"food" | "other">("food");
+  const [shopTab, setShopTab] = useState<"food" | "beds">("food");
+  const [inventoryOpen, setInventoryOpen] = useState<boolean>(false);
+  const [inventoryTab, setInventoryTab] = useState<"beds" | "furniture">("beds");
+
+  const [placingBedId, setPlacingBedId] = useState<string | null>(null);
+  const [placingBedWorldPos, setPlacingBedWorldPos] = useState<{ x: number; y: number } | null>(null);
+  const [movingBedId, setMovingBedId] = useState<string | null>(null);
+
+  const [bedAssignOpen, setBedAssignOpen] = useState<boolean>(false);
+  const [bedAssignBedId, setBedAssignBedId] = useState<string | null>(null);
+  const [bedAssignOwnerPetId, setBedAssignOwnerPetId] = useState<string | null>(null);
+  const [bedAssignColor, setBedAssignColor] = useState<BedColor>(BED_SHOP_DEFAULT_COLOR);
+
+  const [bedOwnerEditOpen, setBedOwnerEditOpen] = useState<boolean>(false);
+  const [bedColorEditOpen, setBedColorEditOpen] = useState<boolean>(false);
+
+  const [bedContextMenu, setBedContextMenu] = useState<{ bedId: string; clientX: number; clientY: number } | null>(null);
   const [foodWheelOpen, setFoodWheelOpen] = useState<boolean>(false);
   const [foodWheelHover, setFoodWheelHover] = useState<FoodId | null>(null);
   const foodWheelRef = useRef<HTMLDivElement | null>(null);
@@ -150,6 +177,10 @@ export default function GamePage() {
   }, [pets]);
 
   useEffect(() => {
+    bedsRef.current = beds;
+  }, [beds]);
+
+  useEffect(() => {
     if (!userName) {
       router.replace("/");
       return;
@@ -185,6 +216,14 @@ export default function GamePage() {
       const h = rect?.height ?? 520;
       const nowEpoch = Date.now();
 
+      const bedsNow = bedsRef.current;
+      const bedByOwner = new Map<string, Bed>();
+      for (const b of bedsNow) {
+        if (!b.ownerPetId) continue;
+        if (b.x == null || b.y == null) continue;
+        if (!bedByOwner.has(b.ownerPetId)) bedByOwner.set(b.ownerPetId, b);
+      }
+
       while (acc >= STEP_MS) {
         acc -= STEP_MS;
         const step = STEP_MS / 1000;
@@ -212,7 +251,24 @@ export default function GamePage() {
           hunger = clamp(hunger + hungerRate, 0, 100);
           
           const energyRate = 0.1 * step;
-          energy = clamp(energy - energyRate, 0, 100);
+          // Sleeping should recover energy; otherwise energy slowly drains.
+          if (p.mood === "sleep") {
+            const bed = bedByOwner.get(p.id);
+            if (bed) {
+              const petCx = p.x + PET_SIZE / 2;
+              const petCy = p.y + PET_SIZE / 2;
+              const bedCx = (bed.x ?? 0) + BED_SIZE / 2;
+              const bedCy = (bed.y ?? 0) + BED_SIZE / 2;
+              const d = Math.hypot(petCx - bedCx, petCy - bedCy);
+              // Only the owner can benefit from the bed.
+              const sleepRegen = d < 18 ? 1.35 * step : 0.55 * step;
+              energy = clamp(energy + sleepRegen, 0, 100);
+            } else {
+              energy = clamp(energy + 0.45 * step, 0, 100);
+            }
+          } else {
+            energy = clamp(energy - energyRate, 0, 100);
+          }
 
           const hungryPenalty = hunger > 70 ? 0.3 * step : 0;
           const tiredPenalty = energy < 30 ? 0.24 * step : 0;
@@ -224,7 +280,19 @@ export default function GamePage() {
           return { ...p, energy, hunger, moodStat };
         });
 
+        // Auto-sleep: low energy forces sleep until recovered.
         next = next.map((p) => {
+          if (p.energy <= 18) {
+            return p.mood === "sleep" ? p : { ...p, mood: "sleep" as const, moodUntil: undefined };
+          }
+          if (p.mood === "sleep" && p.energy >= 65) {
+            return { ...p, mood: "walk" as const };
+          }
+          return p;
+        });
+
+        next = next.map((p) => {
+          if (p.mood !== "walk") return p;
           if (Math.random() < 0.02) {
             const speed = 40 + Math.random() * 50;
             const angle = Math.random() * Math.PI * 2;
@@ -251,11 +319,36 @@ export default function GamePage() {
         }
 
         next = next.map((p) => {
-          const moodFactor = p.mood === "walk" ? 1 : 0.35;
-          let x = p.x + p.vx * step * moodFactor;
-          let y = p.y + p.vy * step * moodFactor;
           let vx = p.vx;
           let vy = p.vy;
+
+          if (p.mood === "sleep") {
+            const bed = bedByOwner.get(p.id);
+            if (bed && bed.x != null && bed.y != null) {
+              const petCx = p.x + PET_SIZE / 2;
+              const petCy = p.y + PET_SIZE / 2;
+              const bedCx = bed.x + BED_SIZE / 2;
+              const bedCy = bed.y + BED_SIZE / 2;
+              const dx = bedCx - petCx;
+              const dy = bedCy - petCy;
+              const d = Math.hypot(dx, dy);
+              if (d > 10) {
+                const speed = 85;
+                vx = (dx / d) * speed;
+                vy = (dy / d) * speed;
+              } else {
+                vx = 0;
+                vy = 0;
+              }
+            } else {
+              vx = 0;
+              vy = 0;
+            }
+          }
+
+          const moodFactor = p.mood === "walk" || p.mood === "sleep" ? 1 : 0.35;
+          let x = p.x + vx * step * moodFactor;
+          let y = p.y + vy * step * moodFactor;
 
           const hardMaxX = Math.max(0, w - PET_SIZE);
           const hardMaxY = Math.max(0, h - PET_SIZE);
@@ -405,6 +498,39 @@ export default function GamePage() {
     setInventoryForSlot(slotIndex, next);
   }
 
+  function updateBeds(updater: (prev: Beds) => Beds) {
+    if (slotIndex == null) return;
+    const prev = bedsRef.current;
+    const next = updater(prev);
+    setBedsForSlot(slotIndex, next);
+  }
+
+  function buyBed() {
+    updateBeds((prev) => [
+      ...prev,
+      {
+        id: makeId("bed"),
+        x: null,
+        y: null,
+        ownerPetId: null,
+        color: BED_SHOP_DEFAULT_COLOR,
+      },
+    ]);
+  }
+
+  function bedSpriteStyle(color: BedColor, size: number): React.CSSProperties {
+    const { col, row } = bedColorToCell(color);
+    const pos = bedBackgroundPosition(col, row);
+    return {
+      width: size,
+      height: size,
+      backgroundImage: `url(${BED_SPRITESHEET_URL})`,
+      backgroundRepeat: "no-repeat",
+      backgroundSize: `${BED_GRID_COLS * 100}% ${BED_GRID_ROWS * 100}%`,
+      backgroundPosition: `${pos.x} ${pos.y}`,
+    };
+  }
+
   function feedSelected(foodId: FoodId) {
     const petId = selectedPetId;
     if (!petId) return;
@@ -473,7 +599,41 @@ export default function GamePage() {
   const cameraTx = w / 2 - cameraScale * petCenterX;
   const cameraTy = h / 2 - cameraScale * petCenterY;
 
+  function clientToWorldPoint(clientX: number, clientY: number) {
+    const rect = worldRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    const sx = clientX - rect.left;
+    const sy = clientY - rect.top;
+    // Inner world group uses translate+scale only when a pet is selected; otherwise transform is "none".
+    const tx = selectedPet ? cameraTx : 0;
+    const ty = selectedPet ? cameraTy : 0;
+    const scale = selectedPet ? cameraScale : 1;
+    const x = (sx - tx) / scale;
+    const y = (sy - ty) / scale;
+    return { x, y };
+  }
+
+  function clampBedWorldPos(pos: { x: number; y: number }) {
+    const maxX = Math.max(0, w - BED_SIZE);
+    const maxY = Math.max(0, h - BED_SIZE);
+    return {
+      x: clamp(pos.x, 0, maxX),
+      y: clamp(pos.y, 0, maxY),
+    };
+  }
+
   const availableFoods = FOODS.filter((f) => (inventory[f.id] ?? 0) > 0);
+
+  const bedsById = new Map(beds.map((b) => [b.id, b] as const));
+  const activePlacingBed = placingBedId ? bedsById.get(placingBedId) ?? null : null;
+  const activeMovingBed = movingBedId ? bedsById.get(movingBedId) ?? null : null;
+
+  const bedByOwnerPlaced = new Map<string, Bed>();
+  for (const b of beds) {
+    if (!b.ownerPetId) continue;
+    if (b.x == null || b.y == null) continue;
+    if (!bedByOwnerPlaced.has(b.ownerPetId)) bedByOwnerPlaced.set(b.ownerPetId, b);
+  }
 
   return (
     <div className="flex flex-1 flex-col">
@@ -495,7 +655,42 @@ export default function GamePage() {
         <div
           ref={worldRef}
           className="relative mx-3 mb-3 flex-1 overflow-hidden rounded-lg border border-emerald-200 bg-white"
+          onPointerMove={(e) => {
+            if (!placingBedId && !movingBedId) return;
+            const nextPos = clampBedWorldPos(clientToWorldPoint(e.clientX, e.clientY));
+            setPlacingBedWorldPos(nextPos);
+            e.preventDefault();
+          }}
           onPointerDown={(e) => {
+            setBedContextMenu(null);
+
+            if (placingBedId || movingBedId) {
+              const nextPos = clampBedWorldPos(clientToWorldPoint(e.clientX, e.clientY));
+
+              if (placingBedId) {
+                const bed = bedsById.get(placingBedId) ?? null;
+                updateBeds((prev) =>
+                  prev.map((b) => (b.id === placingBedId ? { ...b, x: nextPos.x, y: nextPos.y } : b))
+                );
+                setBedAssignBedId(placingBedId);
+                setBedAssignOwnerPetId(selectedPetId ?? pets[0]?.id ?? null);
+                setBedAssignColor((bed?.color ?? BED_SHOP_DEFAULT_COLOR) as BedColor);
+                setBedAssignOpen(true);
+                setPlacingBedId(null);
+                setPlacingBedWorldPos(null);
+              } else if (movingBedId) {
+                updateBeds((prev) =>
+                  prev.map((b) => (b.id === movingBedId ? { ...b, x: nextPos.x, y: nextPos.y } : b))
+                );
+                setMovingBedId(null);
+                setPlacingBedWorldPos(null);
+              }
+
+              e.preventDefault();
+              e.stopPropagation();
+              return;
+            }
+
             const target = e.target;
             if (target instanceof Element && target.closest("button")) return;
             setSelectedPetId(null);
@@ -514,10 +709,81 @@ export default function GamePage() {
               willChange: "transform",
             }}
           >
+            {beds
+              .filter((b) => b.x != null && b.y != null)
+              .map((bed) => (
+                <div
+                  key={bed.id}
+                  className="absolute"
+                  style={{
+                    left: 0,
+                    top: 0,
+                    transform: `translate3d(${bed.x}px, ${bed.y}px, 0)`,
+                    zIndex: Math.max(0, Math.floor((bed.y ?? 0) - 1)),
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setBedContextMenu({ bedId: bed.id, clientX: e.clientX, clientY: e.clientY });
+                  }}
+                >
+                  <div style={bedSpriteStyle(bed.color, BED_SIZE)} aria-hidden="true" />
+                </div>
+              ))}
+
+            {placingBedId || movingBedId ? (
+              (() => {
+                const bed = activePlacingBed ?? activeMovingBed;
+                const fallbackX = bed?.x ?? 0;
+                const fallbackY = bed?.y ?? 0;
+                const pos = placingBedWorldPos ?? { x: fallbackX, y: fallbackY };
+                const color = (bed?.color ?? BED_SHOP_DEFAULT_COLOR) as BedColor;
+                return (
+                  <div
+                    className="absolute pointer-events-none"
+                    style={{
+                      left: 0,
+                      top: 0,
+                      transform: `translate3d(${pos.x}px, ${pos.y}px, 0)`,
+                      opacity: 0.65,
+                      zIndex: 9999,
+                    }}
+                  >
+                    <div style={bedSpriteStyle(color, BED_SIZE)} aria-hidden="true" />
+                  </div>
+                );
+              })()
+            ) : null}
+
             {pets.map((pet) => (
               <PetSprite
                 key={pet.id}
                 pet={pet}
+                zIndexOverride={(() => {
+                  if (pet.mood !== "sleep") return undefined;
+                  const bed = bedByOwnerPlaced.get(pet.id);
+                  if (!bed) return undefined;
+                  if (bed.x == null || bed.y == null) return undefined;
+                  const petCx = pet.x + PET_SIZE / 2;
+                  const petCy = pet.y + PET_SIZE / 2;
+                  const bedCx = bed.x + BED_SIZE / 2;
+                  const bedCy = bed.y + BED_SIZE / 2;
+                  const d = Math.hypot(petCx - bedCx, petCy - bedCy);
+                  if (d > 22) return undefined;
+                  return Math.max(0, Math.floor((bed.y ?? 0) - 1) + 2);
+                })()}
+                sleepingInBed={(() => {
+                  if (pet.mood !== "sleep") return false;
+                  const bed = bedByOwnerPlaced.get(pet.id);
+                  if (!bed) return false;
+                  if (bed.x == null || bed.y == null) return false;
+                  const petCx = pet.x + PET_SIZE / 2;
+                  const petCy = pet.y + PET_SIZE / 2;
+                  const bedCx = bed.x + BED_SIZE / 2;
+                  const bedCy = bed.y + BED_SIZE / 2;
+                  const d = Math.hypot(petCx - bedCx, petCy - bedCy);
+                  return d <= 22;
+                })()}
                 onClick={() => selectPet(pet.id)}
               />
             ))}
@@ -726,10 +992,48 @@ export default function GamePage() {
       <button
         type="button"
         className={
+          "fixed right-20 z-50 h-12 w-12 rounded-xl border border-emerald-200 bg-white text-emerald-900 shadow-sm hover:bg-emerald-50 " +
+          (selectedPet ? "bottom-24" : "bottom-4")
+        }
+        onClick={() => {
+          setInventoryOpen(true);
+          setInventoryTab("beds");
+          setShopOpen(false);
+          setFoodWheelOpen(false);
+        }}
+        aria-label="Abrir inventario"
+        title="Inventario"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="22"
+          height="22"
+          className="mx-auto"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M21 7H3" />
+          <path d="M7 7V5a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v2" />
+          <path d="M5 7l1 14h12l1-14" />
+          <path d="M9 11h6" />
+        </svg>
+      </button>
+
+      <button
+        type="button"
+        className={
           "fixed right-4 z-50 h-12 w-12 rounded-xl border border-emerald-200 bg-white text-emerald-900 shadow-sm hover:bg-emerald-50 " +
           (selectedPet ? "bottom-24" : "bottom-4")
         }
-        onClick={() => setShopOpen(true)}
+        onClick={() => {
+          setShopOpen(true);
+          setShopTab("food");
+          setInventoryOpen(false);
+        }}
         aria-label="Abrir tienda"
         title="Tienda"
       >
@@ -788,13 +1092,13 @@ export default function GamePage() {
                 type="button"
                 className={
                   "flex-1 rounded-md border px-3 py-2 text-sm " +
-                  (shopTab === "other"
+                  (shopTab === "beds"
                     ? "border-emerald-300 bg-emerald-50 text-emerald-950"
                     : "border-emerald-200 bg-white text-emerald-900 hover:bg-emerald-50")
                 }
-                onClick={() => setShopTab("other")}
+                onClick={() => setShopTab("beds")}
               >
-                Otros
+                Camas
               </button>
             </div>
 
@@ -834,10 +1138,359 @@ export default function GamePage() {
                 ))}
               </div>
             ) : (
-              <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950/70">
-                Próximamente.
+              <div className="mt-3 grid grid-cols-1 gap-2">
+                <div className="rounded-md border border-emerald-200 bg-white p-2">
+                  <div className="flex items-center gap-2">
+                    <div className="h-10 w-10 rounded border border-emerald-200 bg-white flex items-center justify-center">
+                      <div style={bedSpriteStyle(BED_SHOP_DEFAULT_COLOR, 40)} aria-hidden="true" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-semibold">Cama (azul)</div>
+                      <div className="text-[11px] text-emerald-950/70">150 LM Coins</div>
+                      <div className="text-[11px] text-emerald-950/70">Tienes: {beds.length}</div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="mt-2 h-9 w-full rounded-md bg-emerald-700 text-sm font-medium text-emerald-50 hover:bg-emerald-600"
+                    onClick={buyBed}
+                  >
+                    Comprar
+                  </button>
+                </div>
               </div>
             )}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Inventory panel (tabbed) */}
+      {inventoryOpen ? (
+        <div className="fixed inset-0 z-50" onClick={() => setInventoryOpen(false)}>
+          <div className="absolute inset-0 bg-emerald-950/30" />
+          <div
+            className="absolute bottom-20 right-20 w-[min(92vw,420px)] rounded-xl border border-emerald-200 bg-white p-3 text-emerald-950 shadow-sm"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold">Inventario</div>
+              <button
+                type="button"
+                className="rounded-md border border-emerald-200 bg-white px-2 py-1 text-xs text-emerald-900 hover:bg-emerald-50"
+                onClick={() => setInventoryOpen(false)}
+              >
+                Cerrar
+              </button>
+            </div>
+
+            <div className="mt-2 flex gap-2">
+              <button
+                type="button"
+                className={
+                  "flex-1 rounded-md border px-3 py-2 text-sm " +
+                  (inventoryTab === "beds"
+                    ? "border-emerald-300 bg-emerald-50 text-emerald-950"
+                    : "border-emerald-200 bg-white text-emerald-900 hover:bg-emerald-50")
+                }
+                onClick={() => setInventoryTab("beds")}
+              >
+                Camas
+              </button>
+              <button
+                type="button"
+                className={
+                  "flex-1 rounded-md border px-3 py-2 text-sm " +
+                  (inventoryTab === "furniture"
+                    ? "border-emerald-300 bg-emerald-50 text-emerald-950"
+                    : "border-emerald-200 bg-white text-emerald-900 hover:bg-emerald-50")
+                }
+                onClick={() => setInventoryTab("furniture")}
+              >
+                Muebles
+              </button>
+            </div>
+
+            {inventoryTab === "beds" ? (
+              <div className="mt-3 grid grid-cols-1 gap-2">
+                {beds.length === 0 ? (
+                  <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950/70">
+                    No tienes camas.
+                  </div>
+                ) : (
+                  beds.map((bed) => {
+                    const ownerName = bed.ownerPetId ? pets.find((p) => p.id === bed.ownerPetId)?.name ?? "(sin dueño)" : "(sin dueño)";
+                    const placed = bed.x != null && bed.y != null;
+                    return (
+                      <div key={bed.id} className="rounded-md border border-emerald-200 bg-white p-2">
+                        <div className="flex items-center gap-2">
+                          <div className="h-12 w-12 rounded border border-emerald-200 bg-white flex items-center justify-center">
+                            <div style={bedSpriteStyle(bed.color, 44)} aria-hidden="true" />
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-xs font-semibold">Cama</div>
+                            <div className="text-[11px] text-emerald-950/70">Dueño: {ownerName}</div>
+                            <div className="text-[11px] text-emerald-950/70">Estado: {placed ? "Colocada" : "Sin colocar"}</div>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="mt-2 h-9 w-full rounded-md bg-emerald-700 text-sm font-medium text-emerald-50 hover:bg-emerald-600"
+                          onClick={() => {
+                            setInventoryOpen(false);
+                            setShopOpen(false);
+                            setBedContextMenu(null);
+                            setMovingBedId(null);
+                            setPlacingBedId(bed.id);
+                            setPlacingBedWorldPos(null);
+                          }}
+                        >
+                          {placed ? "Recolocar" : "Colocar"}
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            ) : (
+              <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-950/70">
+                Vacío.
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Bed context menu (right-click) */}
+      {bedContextMenu ? (
+        <div className="fixed inset-0 z-50" onClick={() => setBedContextMenu(null)}>
+          <div
+            className="absolute w-56 rounded-md border border-emerald-200 bg-white p-1 text-emerald-950 shadow-lg"
+            style={{ left: bedContextMenu.clientX, top: bedContextMenu.clientY }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="w-full rounded px-2 py-2 text-left text-sm hover:bg-emerald-50"
+              onClick={() => {
+                const bed = bedsById.get(bedContextMenu.bedId);
+                setBedContextMenu(null);
+                setShopOpen(false);
+                setInventoryOpen(false);
+                setPlacingBedId(null);
+                setMovingBedId(bedContextMenu.bedId);
+                if (bed?.x != null && bed?.y != null) {
+                  setPlacingBedWorldPos({ x: bed.x, y: bed.y });
+                } else {
+                  setPlacingBedWorldPos(null);
+                }
+              }}
+            >
+              Editar posición
+            </button>
+            <button
+              type="button"
+              className="w-full rounded px-2 py-2 text-left text-sm hover:bg-emerald-50"
+              onClick={() => {
+                const bed = bedsById.get(bedContextMenu.bedId);
+                setBedContextMenu(null);
+                setBedAssignBedId(bedContextMenu.bedId);
+                setBedAssignOwnerPetId(bed?.ownerPetId ?? (selectedPetId ?? pets[0]?.id ?? null));
+                setBedOwnerEditOpen(true);
+              }}
+            >
+              Propietario
+            </button>
+            <button
+              type="button"
+              className="w-full rounded px-2 py-2 text-left text-sm hover:bg-emerald-50"
+              onClick={() => {
+                const bed = bedsById.get(bedContextMenu.bedId);
+                setBedContextMenu(null);
+                setBedAssignBedId(bedContextMenu.bedId);
+                setBedAssignColor((bed?.color ?? BED_SHOP_DEFAULT_COLOR) as BedColor);
+                setBedColorEditOpen(true);
+              }}
+            >
+              Color
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Bed assignment modal (after placing) */}
+      {bedAssignOpen && bedAssignBedId ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-emerald-950/30 p-4" onClick={() => {}}>
+          <div className="w-full max-w-md rounded-xl border border-emerald-200 bg-white p-4 shadow-lg" onClick={(e) => e.stopPropagation()}>
+            <div className="text-sm font-semibold">Asignar cama</div>
+            <div className="mt-3 grid gap-3">
+              <div>
+                <div className="text-xs font-semibold text-emerald-950/80">Mascota</div>
+                <select
+                  className="mt-1 h-10 w-full rounded-md border border-emerald-300 bg-white px-2 text-sm"
+                  value={bedAssignOwnerPetId ?? ""}
+                  onChange={(e) => setBedAssignOwnerPetId(e.target.value || null)}
+                >
+                  <option value="" disabled>
+                    Selecciona una mascota
+                  </option>
+                  {pets.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <div className="text-xs font-semibold text-emerald-950/80">Color</div>
+                <div className="mt-2 grid grid-cols-6 gap-2">
+                  {Array.from({ length: BED_GRID_COLS * BED_GRID_ROWS }).map((_, idx) => {
+                    const c = idx as BedColor;
+                    const active = bedAssignColor === c;
+                    return (
+                      <button
+                        key={idx}
+                        type="button"
+                        className={
+                          "h-12 w-12 rounded-md border flex items-center justify-center bg-white " +
+                          (active ? "border-emerald-500" : "border-emerald-200 hover:bg-emerald-50")
+                        }
+                        onClick={() => setBedAssignColor(c)}
+                        aria-label={`Color ${idx + 1}`}
+                      >
+                        <div style={bedSpriteStyle(c, 40)} aria-hidden="true" />
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  className="h-10 flex-1 rounded-md border border-emerald-200 bg-white text-sm text-emerald-900 hover:bg-emerald-50"
+                  onClick={() => {
+                    // Cancel: revert placement.
+                    const id = bedAssignBedId;
+                    updateBeds((prev) => prev.map((b) => (b.id === id ? { ...b, x: null, y: null } : b)));
+                    setBedAssignOpen(false);
+                    setBedAssignBedId(null);
+                  }}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  className="h-10 flex-1 rounded-md bg-emerald-700 text-sm font-medium text-emerald-50 hover:bg-emerald-600"
+                  onClick={() => {
+                    if (!bedAssignOwnerPetId) return;
+                    const id = bedAssignBedId;
+                    updateBeds((prev) =>
+                      prev.map((b) =>
+                        b.id === id ? { ...b, ownerPetId: bedAssignOwnerPetId, color: bedAssignColor } : b
+                      )
+                    );
+                    setBedAssignOpen(false);
+                    setBedAssignBedId(null);
+                  }}
+                >
+                  Guardar
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Bed owner edit modal */}
+      {bedOwnerEditOpen && bedAssignBedId ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-emerald-950/30 p-4" onClick={() => setBedOwnerEditOpen(false)}>
+          <div className="w-full max-w-sm rounded-xl border border-emerald-200 bg-white p-4 shadow-lg" onClick={(e) => e.stopPropagation()}>
+            <div className="text-sm font-semibold">Cambiar propietario</div>
+            <select
+              className="mt-3 h-10 w-full rounded-md border border-emerald-300 bg-white px-2 text-sm"
+              value={bedAssignOwnerPetId ?? ""}
+              onChange={(e) => setBedAssignOwnerPetId(e.target.value || null)}
+            >
+              <option value="" disabled>
+                Selecciona una mascota
+              </option>
+              {pets.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                className="h-10 flex-1 rounded-md border border-emerald-200 bg-white text-sm text-emerald-900 hover:bg-emerald-50"
+                onClick={() => setBedOwnerEditOpen(false)}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="h-10 flex-1 rounded-md bg-emerald-700 text-sm font-medium text-emerald-50 hover:bg-emerald-600"
+                onClick={() => {
+                  if (!bedAssignOwnerPetId) return;
+                  const id = bedAssignBedId;
+                  updateBeds((prev) => prev.map((b) => (b.id === id ? { ...b, ownerPetId: bedAssignOwnerPetId } : b)));
+                  setBedOwnerEditOpen(false);
+                }}
+              >
+                Guardar
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* Bed color edit modal */}
+      {bedColorEditOpen && bedAssignBedId ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-emerald-950/30 p-4" onClick={() => setBedColorEditOpen(false)}>
+          <div className="w-full max-w-md rounded-xl border border-emerald-200 bg-white p-4 shadow-lg" onClick={(e) => e.stopPropagation()}>
+            <div className="text-sm font-semibold">Cambiar color</div>
+            <div className="mt-3 grid grid-cols-6 gap-2">
+              {Array.from({ length: BED_GRID_COLS * BED_GRID_ROWS }).map((_, idx) => {
+                const c = idx as BedColor;
+                const active = bedAssignColor === c;
+                return (
+                  <button
+                    key={idx}
+                    type="button"
+                    className={
+                      "h-12 w-12 rounded-md border flex items-center justify-center bg-white " +
+                      (active ? "border-emerald-500" : "border-emerald-200 hover:bg-emerald-50")
+                    }
+                    onClick={() => setBedAssignColor(c)}
+                    aria-label={`Color ${idx + 1}`}
+                  >
+                    <div style={bedSpriteStyle(c, 40)} aria-hidden="true" />
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-3 flex gap-2">
+              <button
+                type="button"
+                className="h-10 flex-1 rounded-md border border-emerald-200 bg-white text-sm text-emerald-900 hover:bg-emerald-50"
+                onClick={() => setBedColorEditOpen(false)}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="h-10 flex-1 rounded-md bg-emerald-700 text-sm font-medium text-emerald-50 hover:bg-emerald-600"
+                onClick={() => {
+                  const id = bedAssignBedId;
+                  updateBeds((prev) => prev.map((b) => (b.id === id ? { ...b, color: bedAssignColor } : b)));
+                  setBedColorEditOpen(false);
+                }}
+              >
+                Guardar
+              </button>
+            </div>
           </div>
         </div>
       ) : null}

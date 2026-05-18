@@ -3,14 +3,14 @@
 import { useMemo, useRef, useState } from "react";
 import type { Pet, PetType } from "@/lib/types";
 
-const SHEET_SIZE = 500;
-
 function typeToSheet(type: Pet["type"]): string {
   switch (type) {
     case "peyo":
       return "/Recursos/SpriteSheets/PeyoSS.png";
     case "micha":
       return "/Recursos/SpriteSheets/MichaSS.png";
+    case "kiwi":
+      return "/Recursos/SpriteSheets/Kiwi2wb.png?v=20260517c";
   }
 }
 
@@ -164,6 +164,7 @@ export function GameTopMenu({
                     >
                       <option value="peyo">Peyo</option>
                       <option value="micha">Micha</option>
+                      <option value="kiwi">Kiwi</option>
                     </select>
                     <input
                       className="h-10 flex-1 rounded-md border border-emerald-300 bg-white px-3 text-sm"
@@ -222,18 +223,22 @@ export function GameTopMenu({
                                 title="Seleccionar mascota"
                               >
                                 <div
-                                  className="shrink-0 rounded border border-emerald-200 bg-white"
-                                  style={{
-                                    width: 48,
-                                    height: 48,
-                                    backgroundImage: `url(${typeToSheet(pet.type)})`,
-                                    backgroundRepeat: "no-repeat",
-                                    backgroundSize: `${SHEET_SIZE}px ${SHEET_SIZE}px`,
-                                    backgroundPosition: "0px 0px",
-                                    imageRendering: "pixelated",
-                                  }}
+                                  className="shrink-0 rounded border border-emerald-200 bg-white flex items-center justify-center overflow-hidden"
+                                  style={{ width: 48, height: 48 }}
                                   aria-hidden="true"
-                                />
+                                >
+                                  <div
+                                    style={{
+                                      width: 48,
+                                      height: 48,
+                                      backgroundImage: `url(${typeToSheet(pet.type)})`,
+                                      backgroundRepeat: "no-repeat",
+                                      backgroundSize: `${48 * 5}px ${48 * 5}px`,
+                                      backgroundPosition: "0px 0px",
+                                      imageRendering: "pixelated",
+                                    }}
+                                  />
+                                </div>
                                 <div className="min-w-0">
                                   <div className="truncate text-xs font-semibold text-emerald-950">
                                     {pet.name}

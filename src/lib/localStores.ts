@@ -1,8 +1,10 @@
 import {
   getActiveSlotIndex,
   getActiveUser,
+  getBedsForSlot,
   getInventoryForSlot,
   getSaveSlots,
+  type Beds,
   type Inventory,
 } from "@/lib/storage";
 
@@ -12,15 +14,37 @@ const EMPTY_SLOTS: Array<string | null> = [null, null, null];
 const EMPTY_ACTIVE_USER: string | null = null;
 const EMPTY_ACTIVE_SLOT: number | null = null;
 const EMPTY_INVENTORY: Inventory = { fish: 0, water: 0, seeds: 0, corn: 0 };
+const EMPTY_BEDS: Beds = [];
 
 let cachedSlots: Array<string | null> = EMPTY_SLOTS;
 let cachedActiveUser: string | null = EMPTY_ACTIVE_USER;
 let cachedActiveSlot: number | null = EMPTY_ACTIVE_SLOT;
 let cachedInventorySlot: number | null = null;
 let cachedInventory: Inventory = EMPTY_INVENTORY;
+let cachedBedsSlot: number | null = null;
+let cachedBeds: Beds = EMPTY_BEDS;
 
 function sameInventory(a: Inventory, b: Inventory) {
   return a.fish === b.fish && a.water === b.water && a.seeds === b.seeds && a.corn === b.corn;
+}
+
+function sameBeds(a: Beds, b: Beds) {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (
+      x.id !== y.id ||
+      x.x !== y.x ||
+      x.y !== y.y ||
+      x.ownerPetId !== y.ownerPetId ||
+      x.color !== y.color
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function sameNullableStringArray(a: Array<string | null>, b: Array<string | null>) {
@@ -68,6 +92,18 @@ function readActiveInventorySnapshot(): Inventory {
   return cachedInventory;
 }
 
+function readActiveBedsSnapshot(): Beds {
+  if (typeof window === "undefined") return EMPTY_BEDS;
+  const slot = getActiveSlotIndex();
+  if (slot == null) return EMPTY_BEDS;
+
+  const next = getBedsForSlot(slot);
+  if (slot === cachedBedsSlot && sameBeds(cachedBeds, next)) return cachedBeds;
+  cachedBedsSlot = slot;
+  cachedBeds = next;
+  return cachedBeds;
+}
+
 function subscribeToLocalStorage(listener: Listener) {
   if (typeof window === "undefined") return () => {};
 
@@ -107,4 +143,10 @@ export const activeInventoryStore = {
   subscribe: subscribeToLocalStorage,
   getSnapshot: readActiveInventorySnapshot,
   getServerSnapshot: () => EMPTY_INVENTORY,
+};
+
+export const activeBedsStore = {
+  subscribe: subscribeToLocalStorage,
+  getSnapshot: readActiveBedsSnapshot,
+  getServerSnapshot: () => EMPTY_BEDS,
 };

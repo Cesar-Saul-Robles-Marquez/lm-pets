@@ -6,39 +6,73 @@ import type { Pet } from "@/lib/types";
 import { createSaveSlot, getPetsForSlot, setActiveSlotIndex } from "@/lib/storage";
 import { saveSlotsStore } from "@/lib/localStores";
 
-const SHEET_SIZE = 500;
-
 function typeToSheet(type: string): string {
   switch (type) {
     case "peyo":
       return "/Recursos/SpriteSheets/PeyoSS.png";
     case "micha":
       return "/Recursos/SpriteSheets/MichaSS.png";
+    case "kiwi":
+      return "/Recursos/SpriteSheets/Kiwi2wb.png?v=20260517c";
     default:
       return "/Recursos/SpriteSheets/PeyoSS.png";
   }
 }
 
+function playHoverSound() {
+  try {
+    const w = window as Window & { webkitAudioContext?: typeof AudioContext };
+    const AudioContextCtor = window.AudioContext ?? w.webkitAudioContext;
+    if (!AudioContextCtor) return;
+    const ctx = new AudioContextCtor();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(600, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(800, ctx.currentTime + 0.05);
+    gain.gain.setValueAtTime(0.02, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.05);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.05);
+  } catch {
+    // Ignore audio errors
+  }
+}
+
+
 function PetMini({ pet }: { pet: Pet }) {
+  const size = 36;
+  const frameWidth = size;
+  const frameHeight = size;
+  const sheetWidth = frameWidth * 5;
+  const sheetHeight = frameHeight * 5;
+
   return (
     <div
-      className="h-9 w-9 rounded-md border border-emerald-200 bg-white"
-      style={{
-        backgroundImage: `url(${typeToSheet(pet.type)})`,
-        backgroundRepeat: "no-repeat",
-        backgroundSize: `${SHEET_SIZE}px ${SHEET_SIZE}px`,
-        backgroundPosition: "0px 0px",
-        imageRendering: "pixelated",
-      }}
-      aria-hidden="true"
+      className="h-9 w-9 flex items-center justify-center rounded-md border border-emerald-200 bg-white overflow-hidden"
       title={pet.name}
-    />
+    >
+      <div 
+        style={{
+          width: frameWidth,
+          height: frameHeight,
+          backgroundImage: `url(${typeToSheet(pet.type)})`,
+          backgroundRepeat: "no-repeat",
+          backgroundSize: `${sheetWidth}px ${sheetHeight}px`,
+          backgroundPosition: "0px 0px",
+          imageRendering: "pixelated",
+        }}
+        aria-hidden="true"
+      />
+    </div>
   );
 }
 
 function EmptyMini() {
   return (
-    <div className="flex h-9 w-9 items-center justify-center rounded-md border border-emerald-200 bg-white text-sm font-semibold text-emerald-950/35">
+    <div className="flex h-9 w-9 items-center justify-center rounded-md border border-emerald-100 bg-white/50 text-sm font-semibold text-emerald-950/20">
       ?
     </div>
   );
@@ -101,20 +135,17 @@ export default function Home() {
     <div className="flex flex-1 items-center justify-center bg-emerald-50 px-4 py-10">
       <main className="w-full max-w-6xl">
         <div className="text-center">
-          <h1 className="text-5xl font-semibold tracking-tight text-emerald-950">LM Pets</h1>
-          <p className="mt-2 text-sm text-emerald-950/70">
-            Elige un archivo. Si está vacío, créalo poniendo tu nombre.
-          </p>
+          <h1 className="text-5xl font-black tracking-tight text-emerald-950 drop-shadow-sm">LM Pets</h1>
         </div>
 
         {error ? (
-          <div className="mx-auto mt-4 w-full max-w-xl rounded-md border border-red-200 bg-white px-4 py-3 text-sm text-red-700">
+          <div className="mx-auto mt-4 w-full max-w-xl rounded-2xl border border-red-200 bg-white px-4 py-3 text-sm text-red-700 shadow-sm">
             {error}
           </div>
         ) : null}
 
-        <div className="mt-6 overflow-x-auto">
-          <div className="mx-auto flex w-max min-w-full justify-center gap-4">
+        <div className="mt-12 w-full px-4 pb-12 pt-4">
+          <div className="mx-auto flex flex-wrap justify-center gap-8">
             {[0, 1, 2].map((idx) => {
               const name = slots[idx];
               const empty = !name;
@@ -123,57 +154,58 @@ export default function Home() {
                 <button
                   key={idx}
                   type="button"
+                  onMouseEnter={playHoverSound}
                   className={
-                    "group relative h-80 w-80 shrink-0 rounded-2xl border p-4 text-left shadow-sm transition-colors " +
+                    "group relative flex h-72 w-72 flex-col shrink-0 rounded-[2rem] border-2 p-6 text-left shadow-sm transition-all duration-300 ease-out " +
                     (empty
-                      ? "border-emerald-200 bg-white hover:bg-emerald-50"
-                      : "border-emerald-300 bg-emerald-50 hover:bg-emerald-100")
+                      ? "border-emerald-200 bg-white hover:-translate-y-2 hover:border-emerald-300 hover:shadow-xl hover:shadow-emerald-900/5"
+                      : "border-emerald-300 bg-emerald-100/50 hover:-translate-y-2 hover:border-emerald-400 hover:bg-emerald-100 hover:shadow-xl hover:shadow-emerald-900/10")
                   }
                   onClick={() => selectSlot(idx)}
                 >
-                  <div className="flex items-start justify-between">
-                    <div className="min-w-0">
-                      <div className="text-xs font-medium text-emerald-950/70">Archivo {idx + 1}</div>
-                      <div className="mt-0.5 truncate text-lg font-semibold text-emerald-950">
-                        {empty ? "Vacío" : name}
-                      </div>
-                      <div className="mt-0.5 text-xs text-emerald-950/60">
-                        {empty ? "Click para crear" : "Click para jugar"}
+                  {empty ? (
+                    <div className="flex h-full w-full items-center justify-center">
+                      <div className="text-4xl font-black tracking-tight text-emerald-950/15 transition-colors duration-300 group-hover:text-emerald-950/30">
+                        Vacío
                       </div>
                     </div>
-                    <div className="rounded-md border border-emerald-200 bg-white px-2 py-1 text-xs font-medium text-emerald-900">
-                      {empty ? "Crear" : "Jugar"}
+                  ) : (
+                    <div className="flex h-full flex-col">
+                      <div className="truncate text-3xl font-bold text-emerald-950 group-hover:text-emerald-900 transition-colors">
+                        {name}
+                      </div>
+                      <div className="mt-auto grid grid-cols-5 gap-3">
+                        {Array.from({ length: 10 }).map((_, i) => {
+                          const pet = pets[i];
+                          return pet ? <PetMini key={pet.id ?? i} pet={pet} /> : <EmptyMini key={i} />;
+                        })}
+                      </div>
                     </div>
-                  </div>
-
-                  <div className="mt-4 grid grid-cols-5 gap-2">
-                    {Array.from({ length: 10 }).map((_, i) => {
-                      const pet = pets[i];
-                      return pet ? <PetMini key={pet.id ?? i} pet={pet} /> : <EmptyMini key={i} />;
-                    })}
-                  </div>
+                  )}
                 </button>
               );
             })}
           </div>
         </div>
-
-        <div className="mx-auto mt-4 max-w-xl text-center text-xs text-emerald-950/60">
-          Tip: cada archivo guarda sus mascotas y tutorial.
-        </div>
       </main>
 
-      {/* Toast: create profile */}
+      {/* Modal: create profile */}
       {toastOpen && pendingSlotIndex != null ? (
-        <div className="fixed inset-x-0 bottom-6 z-50 flex justify-center px-4">
-          <div className="w-full max-w-lg rounded-xl border border-emerald-200 bg-white p-4 text-emerald-950 shadow-sm">
-            <div className="text-sm font-semibold">Crear archivo {pendingSlotIndex + 1}</div>
-            <div className="mt-1 text-xs text-emerald-950/70">Nombre del jugador</div>
-            <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center bg-emerald-950/20 backdrop-blur-sm p-4 transition-opacity"
+          onClick={cancelCreate}
+        >
+          <div 
+            className="w-full max-w-md rounded-[2rem] border border-emerald-100 bg-white p-8 shadow-2xl transition-transform transform scale-100"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-2xl font-black text-emerald-950 text-center">Crear perfil</div>
+            <div className="mt-2 text-sm text-emerald-950/70 text-center">Ingresa tu nombre para comenzar tu aventura</div>
+            <div className="mt-8 flex flex-col gap-4">
               <input
                 ref={nameInputRef}
-                className="h-10 flex-1 rounded-md border border-emerald-200 bg-white px-3 text-sm text-emerald-950 placeholder:text-emerald-950/40"
-                placeholder="Ej: Saul"
+                className="h-14 w-full rounded-2xl border border-emerald-200 bg-emerald-50/50 px-5 text-lg font-medium text-emerald-950 placeholder:text-emerald-950/40 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-shadow"
+                placeholder="Tu nombre..."
                 value={pendingName}
                 onChange={(e) => {
                   setError(null);
@@ -184,20 +216,22 @@ export default function Home() {
                   if (e.key === "Escape") cancelCreate();
                 }}
               />
-              <button
-                type="button"
-                className="h-10 rounded-md bg-emerald-700 px-3 text-sm font-medium text-emerald-50 hover:bg-emerald-600"
-                onClick={confirmCreate}
-              >
-                Crear
-              </button>
-              <button
-                type="button"
-                className="h-10 rounded-md border border-emerald-200 bg-white px-3 text-sm text-emerald-900 hover:bg-emerald-50"
-                onClick={cancelCreate}
-              >
-                Cancelar
-              </button>
+              <div className="flex gap-3 mt-2">
+                <button
+                  type="button"
+                  className="h-12 flex-1 rounded-2xl bg-emerald-600 px-4 text-base font-bold text-white shadow-sm hover:bg-emerald-500 hover:shadow transition-all"
+                  onClick={confirmCreate}
+                >
+                  Crear
+                </button>
+                <button
+                  type="button"
+                  className="h-12 flex-1 rounded-2xl border border-emerald-200 bg-white px-4 text-base font-bold text-emerald-900 shadow-sm hover:bg-emerald-50 transition-all"
+                  onClick={cancelCreate}
+                >
+                  Cancelar
+                </button>
+              </div>
             </div>
           </div>
         </div>

@@ -55,6 +55,12 @@ const PREFERENCES: Record<PetType, Record<FoodId, FoodPreference>> = {
     seeds: "like",
     corn: "hate",
   },
+  kiwi: {
+    fish: "hate",
+    water: "love",
+    seeds: "like",
+    corn: "hate",
+  },
 };
 
 export function getFoodPreference(petType: PetType, foodId: FoodId): FoodPreference {

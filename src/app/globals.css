@@ -25,11 +25,11 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
-@keyframes lmPetsSpriteX {
+@keyframes spriteAnim {
   from {
     background-position-x: 0px;
   }
   to {
-    background-position-x: -500px;
+    background-position-x: var(--anim-end, -500px);
   }
 }

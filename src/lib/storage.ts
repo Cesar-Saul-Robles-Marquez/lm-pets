@@ -1,4 +1,4 @@
-import type { Pet } from "@/lib/types";
+import type { Bed, BedColor, Pet } from "@/lib/types";
 import type { FoodId } from "@/lib/foods";
 
 // Legacy keys (pre save-slots)
@@ -200,12 +200,46 @@ export function setTutorialSeenForSlot(slotIndex: number, seen: boolean) {
 
 export type Inventory = Record<FoodId, number>;
 
+export type Beds = Bed[];
+
 const EMPTY_INVENTORY: Inventory = {
   fish: 0,
   water: 0,
   seeds: 0,
   corn: 0,
 };
+
+const EMPTY_BEDS: Beds = [];
+
+function normalizeBedColor(value: unknown): BedColor {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return 1;
+  const idx = Math.max(0, Math.min(11, Math.trunc(n)));
+  return idx as BedColor;
+}
+
+function normalizeBeds(value: unknown): Beds {
+  if (!Array.isArray(value)) return EMPTY_BEDS;
+  const out: Beds = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const obj = item as Record<string, unknown>;
+    const id = typeof obj.id === "string" && obj.id.trim() ? obj.id : null;
+    if (!id) continue;
+    const xRaw = obj.x;
+    const yRaw = obj.y;
+    const x = xRaw == null ? null : (typeof xRaw === "number" ? xRaw : Number(xRaw));
+    const y = yRaw == null ? null : (typeof yRaw === "number" ? yRaw : Number(yRaw));
+    const xNorm = x == null || !Number.isFinite(x) ? null : x;
+    const yNorm = y == null || !Number.isFinite(y) ? null : y;
+
+    const ownerPetId = typeof obj.ownerPetId === "string" && obj.ownerPetId.trim() ? obj.ownerPetId : null;
+    const color = normalizeBedColor(obj.color);
+
+    out.push({ id, x: xNorm, y: yNorm, ownerPetId, color });
+  }
+  return out;
+}
 
 function normalizeInventory(value: unknown): Inventory {
   const out: Inventory = { ...EMPTY_INVENTORY };
@@ -234,11 +268,32 @@ export function getInventoryForSlot(slotIndex: number): Inventory {
   }
 }
 
+export function getBedsForSlot(slotIndex: number): Beds {
+  if (typeof window === "undefined") return EMPTY_BEDS;
+  if (!isValidSlotIndex(slotIndex)) return EMPTY_BEDS;
+  const raw = window.localStorage.getItem(slotKey(slotIndex, "beds"));
+  if (!raw) return EMPTY_BEDS;
+  try {
+    const parsed = JSON.parse(raw);
+    return normalizeBeds(parsed);
+  } catch {
+    return EMPTY_BEDS;
+  }
+}
+
 export function setInventoryForSlot(slotIndex: number, inv: Inventory) {
   if (typeof window === "undefined") return;
   if (!isValidSlotIndex(slotIndex)) return;
   const normalized = normalizeInventory(inv);
   window.localStorage.setItem(slotKey(slotIndex, "inventory"), JSON.stringify(normalized));
+  notifyStorageChange();
+}
+
+export function setBedsForSlot(slotIndex: number, beds: Beds) {
+  if (typeof window === "undefined") return;
+  if (!isValidSlotIndex(slotIndex)) return;
+  const normalized = normalizeBeds(beds);
+  window.localStorage.setItem(slotKey(slotIndex, "beds"), JSON.stringify(normalized));
   notifyStorageChange();
 }
 
