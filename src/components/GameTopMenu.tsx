@@ -2,6 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import type { Pet, PetType } from "@/lib/types";
+import jsPDF from "jspdf";
 
 function typeToSheet(type: Pet["type"]): string {
   switch (type) {
@@ -12,6 +13,52 @@ function typeToSheet(type: Pet["type"]): string {
     case "kiwi":
       return "/Recursos/SpriteSheets/Kiwi2wb.png?v=20260517c";
   }
+}
+
+function typeToLabel(type: Pet["type"]): string {
+  switch (type) {
+    case "peyo":
+      return "Peyo";
+    case "micha":
+      return "Micha";
+    case "kiwi":
+      return "Kiwi";
+  }
+}
+
+function formatBirthDate(epochMs: number | null | undefined): string {
+  if (epochMs == null) return "—";
+  const d = new Date(epochMs);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString("es-ES", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+}
+
+function PetPhoto({ type, size }: { type: Pet["type"]; size: number }) {
+  // First frame (0,0) from 5×5 spritesheet (100×100 frames).
+  const frame = 100;
+  return (
+    <div
+      className="rounded border border-emerald-200 bg-white overflow-hidden"
+      style={{ width: size, height: size }}
+      aria-hidden="true"
+    >
+      <div
+        style={{
+          width: size,
+          height: size,
+          backgroundImage: `url(${typeToSheet(type)})`,
+          backgroundRepeat: "no-repeat",
+          backgroundSize: `${frame * 5}px ${frame * 5}px`,
+          backgroundPosition: "0px 0px",
+          imageRendering: "pixelated",
+        }}
+      />
+    </div>
+  );
 }
 
 function StatBar({ value }: { value: number }) {
@@ -37,17 +84,24 @@ export function GameTopMenu({
   pets: Pet[];
   selectedPetId: string | null;
   onSelectPet: (petId: string) => void;
-  onCreatePet: (type: PetType, name: string) => { ok: true } | { ok: false; error: string };
+  onCreatePet: (type: PetType, name: string) =>
+    | { ok: true; petId: string }
+    | { ok: false; error: string };
   onInteract: (petId: string) => void;
   onBack: () => void;
   maxRows?: number;
 }) {
   const [open, setOpen] = useState<boolean>(false);
+  const [createOpen, setCreateOpen] = useState<boolean>(false);
+  const [certificateOpen, setCertificateOpen] = useState<boolean>(false);
+  const [certificatePetId, setCertificatePetId] = useState<string | null>(null);
+
   const [newType, setNewType] = useState<PetType>("peyo");
   const [newName, setNewName] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [dragY, setDragY] = useState<number>(0);
   const dragStartY = useRef<number | null>(null);
+  const certificateRef = useRef<HTMLDivElement | null>(null);
 
   const rows = useMemo(() => {
     const out: Array<Pet | null> = [];
@@ -61,6 +115,86 @@ export function GameTopMenu({
   function close() {
     setDragY(0);
     setOpen(false);
+  }
+
+  function closeCreate() {
+    setCreateOpen(false);
+    setError(null);
+  }
+
+  function openCertificateForPet(petId: string) {
+    setCertificatePetId(petId);
+    setCertificateOpen(true);
+    setError(null);
+  }
+
+  const certificatePet = useMemo(() => {
+    if (!certificatePetId) return null;
+    return pets.find((p) => p.id === certificatePetId) ?? null;
+  }, [certificatePetId, pets]);
+
+  async function spritePhotoDataUrl(type: Pet["type"]) {
+    const sheetUrl = typeToSheet(type);
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.src = sheetUrl;
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error("No se pudo cargar el spritesheet"));
+    });
+
+    // Crop first 100×100 frame at (0,0) and scale up.
+    const srcSize = 100;
+    const outSize = 280;
+    const canvas = document.createElement("canvas");
+    canvas.width = outSize;
+    canvas.height = outSize;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas no disponible");
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(img, 0, 0, srcSize, srcSize, 0, 0, outSize, outSize);
+    return canvas.toDataURL("image/png");
+  }
+
+  async function exportCertificatePdf() {
+    const pet = certificatePet;
+    if (!pet) return;
+
+    const pdf = new jsPDF({ orientation: "p", unit: "pt", format: "a4" });
+    const pageW = pdf.internal.pageSize.getWidth();
+    const margin = 48;
+    const lineH = 18;
+
+    const titleY = margin;
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(20);
+    pdf.text("Acta de nacimiento", margin, titleY);
+
+    const bornAt = pet.birth?.bornAt;
+    const dateStr = formatBirthDate(bornAt);
+    const ownerStr = pet.birth?.owner?.trim() || userName.trim() || "—";
+
+    pdf.setFont("helvetica", "normal");
+    pdf.setFontSize(12);
+
+    const startY = titleY + 30;
+    const leftX = margin;
+    const rightX = pageW - margin - 220;
+
+    pdf.text(`Especie: ${typeToLabel(pet.type)}`, leftX, startY);
+    pdf.text(`Nombre: ${pet.name}`, leftX, startY + lineH);
+    pdf.text(`Fecha: ${dateStr}`, leftX, startY + lineH * 2);
+    pdf.text(`Dueño: ${ownerStr}`, leftX, startY + lineH * 3);
+
+    try {
+      const photo = await spritePhotoDataUrl(pet.type);
+      pdf.addImage(photo, "PNG", rightX, startY - 6, 200, 200);
+    } catch {
+      // If photo fails, we still export the document.
+    }
+
+    const safeName = pet.name.trim().replace(/\s+/g, " ") || "Mascota";
+    pdf.save(`Acta-${safeName}.pdf`);
   }
 
   function isInteractiveTarget(target: EventTarget | null) {
@@ -154,47 +288,16 @@ export function GameTopMenu({
 
             <div className="max-h-[70vh] overflow-auto p-4">
               <div className="flex flex-col gap-3">
-                <div className="flex flex-col gap-2">
-                  <div className="text-sm font-semibold">Crear mascota</div>
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                    <select
-                      className="h-10 rounded-md border border-emerald-300 bg-white px-2 text-sm"
-                      value={newType}
-                      onChange={(e) => setNewType(e.target.value as PetType)}
-                    >
-                      <option value="peyo">Peyo</option>
-                      <option value="micha">Micha</option>
-                      <option value="kiwi">Kiwi</option>
-                    </select>
-                    <input
-                      className="h-10 flex-1 rounded-md border border-emerald-300 bg-white px-3 text-sm"
-                      placeholder="Nombre de la mascota"
-                      value={newName}
-                      onChange={(e) => setNewName(e.target.value)}
-                    />
-                    <button
-                      type="button"
-                      className="h-10 rounded-md bg-emerald-700 px-3 text-sm font-medium text-emerald-50 hover:bg-emerald-600"
-                      onClick={() => {
-                        setError(null);
-                        const res = onCreatePet(newType, newName);
-                        if (!res.ok) {
-                          setError(res.error);
-                          return;
-                        }
-                        setNewName("");
-                      }}
-                    >
-                      Crear
-                    </button>
-                  </div>
-                  {error ? (
-                    <div className="text-sm text-red-700">{error}</div>
-                  ) : null}
-                  <div className="text-xs text-emerald-900/70">
-                    Tip: desliza hacia arriba para cerrar.
-                  </div>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setError(null);
+                    setCreateOpen(true);
+                  }}
+                  className="h-10 rounded-md bg-emerald-700 px-3 text-sm font-medium text-emerald-50 hover:bg-emerald-600"
+                >
+                  Crear mascota
+                </button>
 
                 <div className="text-sm font-semibold">Tus mascotas (2×5)</div>
                 <div className="rounded-md border border-emerald-200 bg-white p-3">
@@ -287,6 +390,14 @@ export function GameTopMenu({
                               >
                                 Interactuar
                               </button>
+
+                              <button
+                                type="button"
+                                className="h-8 rounded-md bg-emerald-700 text-xs font-medium text-emerald-50 hover:bg-emerald-600"
+                                onClick={() => openCertificateForPet(pet.id)}
+                              >
+                                Ver acta
+                              </button>
                             </div>
                           ) : (
                             <div className="flex h-full flex-col items-center justify-center gap-1 py-6">
@@ -299,6 +410,180 @@ export function GameTopMenu({
                   </div>
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Create pet toast */}
+      <div
+        className={
+          "fixed inset-0 z-50 transition-opacity duration-200 " +
+          (createOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0")
+        }
+        onClick={closeCreate}
+        aria-hidden={!createOpen}
+      >
+        <div className="absolute inset-0 bg-emerald-950/30" />
+
+        <div
+          className="absolute bottom-3 left-1/2 w-[min(92vw,760px)] -translate-x-1/2"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-950 shadow-sm">
+            <div className="flex items-center justify-between border-b border-emerald-200 px-4 py-3">
+              <div className="text-sm font-semibold">Crear mascota</div>
+              <button
+                type="button"
+                onClick={closeCreate}
+                className="rounded-md border border-emerald-300 bg-white px-3 py-1.5 text-sm text-emerald-900 hover:bg-emerald-100"
+              >
+                Cerrar
+              </button>
+            </div>
+
+            <div className="p-4">
+              <div className="flex flex-col gap-3">
+                <div className="text-sm font-semibold">Elige especie</div>
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {(["peyo", "micha", "kiwi"] as PetType[]).map((t) => {
+                    const active = t === newType;
+                    return (
+                      <button
+                        key={t}
+                        type="button"
+                        onClick={() => setNewType(t)}
+                        className={
+                          "shrink-0 rounded-lg border p-2 text-left " +
+                          (active
+                            ? "border-emerald-500 bg-emerald-50"
+                            : "border-emerald-200 bg-white hover:bg-emerald-50")
+                        }
+                        style={{ width: 170 }}
+                      >
+                        <div className="flex items-center gap-2">
+                          <PetPhoto type={t} size={56} />
+                          <div className="min-w-0">
+                            <div className="text-sm font-semibold text-emerald-950">{typeToLabel(t)}</div>
+                            <div className="text-xs text-emerald-950/70">{t}</div>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <input
+                    className="h-10 rounded-md border border-emerald-300 bg-white px-3 text-sm"
+                    placeholder="Nombre de la mascota"
+                    value={newName}
+                    onChange={(e) => setNewName(e.target.value)}
+                  />
+                  <div className="flex h-10 items-center rounded-md border border-emerald-200 bg-emerald-50 px-3 text-sm text-emerald-950/80">
+                    Dueño: <span className="ml-2 font-semibold text-emerald-950">{userName}</span>
+                  </div>
+                </div>
+
+                {error ? <div className="text-sm text-red-700">{error}</div> : null}
+
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    className="h-10 rounded-md bg-emerald-700 px-4 text-sm font-medium text-emerald-50 hover:bg-emerald-600"
+                    onClick={() => {
+                      setError(null);
+                      const res = onCreatePet(newType, newName);
+                      if (!res.ok) {
+                        setError(res.error);
+                        return;
+                      }
+                      setNewName("");
+                      setCreateOpen(false);
+                      openCertificateForPet(res.petId);
+                    }}
+                  >
+                    Crear
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Birth certificate toast */}
+      <div
+        className={
+          "fixed inset-0 z-50 transition-opacity duration-200 " +
+          (certificateOpen ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0")
+        }
+        onClick={() => setCertificateOpen(false)}
+        aria-hidden={!certificateOpen}
+      >
+        <div className="absolute inset-0 bg-emerald-950/30" />
+
+        <div
+          className="absolute bottom-3 left-1/2 w-[min(92vw,760px)] -translate-x-1/2"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-950 shadow-sm">
+            <div className="flex items-center justify-between border-b border-emerald-200 px-4 py-3">
+              <div className="text-sm font-semibold">Acta de nacimiento</div>
+              <button
+                type="button"
+                onClick={() => setCertificateOpen(false)}
+                className="rounded-md border border-emerald-300 bg-white px-3 py-1.5 text-sm text-emerald-900 hover:bg-emerald-100"
+              >
+                Cerrar
+              </button>
+            </div>
+
+            <div className="p-4">
+              {certificatePet ? (
+                <div className="flex flex-col gap-3">
+                  <div
+                    ref={certificateRef}
+                    className="rounded-lg border border-emerald-200 bg-white p-4"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="text-base font-semibold text-emerald-950">Acta de nacimiento</div>
+                        <div className="mt-2 grid grid-cols-1 gap-1 text-sm text-emerald-950 sm:grid-cols-2">
+                          <div>
+                            <span className="font-semibold">Especie:</span> {typeToLabel(certificatePet.type)}
+                          </div>
+                          <div>
+                            <span className="font-semibold">Nombre:</span> {certificatePet.name}
+                          </div>
+                          <div>
+                            <span className="font-semibold">Fecha:</span> {formatBirthDate(certificatePet.birth?.bornAt)}
+                          </div>
+                          <div>
+                            <span className="font-semibold">Dueño:</span> {certificatePet.birth?.owner?.trim() ? certificatePet.birth.owner.trim() : userName || "—"}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="shrink-0">
+                        <PetPhoto type={certificatePet.type} size={96} />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      className="h-10 rounded-md border border-emerald-300 bg-white px-4 text-sm text-emerald-900 hover:bg-emerald-100"
+                      onClick={exportCertificatePdf}
+                    >
+                      Exportar PDF
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-sm text-emerald-950/70">No se encontró la mascota.</div>
+              )}
             </div>
           </div>
         </div>

@@ -1,6 +1,11 @@
 export type PetType = "peyo" | "micha" | "kiwi";
 export type PetMood = "walk" | "happy" | "hungry" | "sleep" | "angry";
 
+export type BirthCertificate = {
+  bornAt: number; // epoch ms
+  owner: string;
+};
+
 export type BedColor =
   | 0
   | 1
@@ -28,6 +33,7 @@ export type Pet = {
   id: string;
   type: PetType;
   name: string;
+  birth?: BirthCertificate;
   x: number;
   y: number;
   vx: number;

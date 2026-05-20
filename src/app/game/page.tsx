@@ -25,6 +25,11 @@ import type { Beds, Inventory } from "@/lib/storage";
 const MAX_PETS = 10;
 const PET_SIZE = 100;
 const BED_SIZE = 88;
+const PET_SLEEP_OFFSET_Y: Record<PetType, number> = {
+  peyo: 35,
+  micha: 35,
+  kiwi: 20,
+};
 const STEP_MS = 16.666; // 60 FPS simulation
 const CAMERA_SCALE_SELECTED = 1.7;
 const FENCE_CAMERA_SCALE = CAMERA_SCALE_SELECTED;
@@ -73,6 +78,17 @@ function setMood(pet: Pet, mood: PetMood, durationMs: number) {
 function normalizePet(raw: Pet): Pet {
   return {
     ...raw,
+    birth:
+      raw.birth && Number.isFinite(raw.birth.bornAt)
+        ? {
+            bornAt: raw.birth.bornAt,
+            owner: String(
+              (raw.birth as unknown as { owner?: string; father?: string }).owner ??
+                (raw.birth as unknown as { owner?: string; father?: string }).father ??
+                ""
+            ),
+          }
+        : { bornAt: Date.now(), owner: "" },
     energy: Number.isFinite(raw.energy) ? clamp(raw.energy, 0, 100) : 100,
     hunger: Number.isFinite(raw.hunger) ? clamp(raw.hunger, 0, 100) : 0,
     moodStat: Number.isFinite(raw.moodStat) ? clamp(raw.moodStat, 0, 100) : 70,
@@ -83,6 +99,7 @@ export default function GamePage() {
   const router = useRouter();
 
   const worldRef = useRef<HTMLDivElement | null>(null);
+  const worldGroupRef = useRef<HTMLDivElement | null>(null);
   const [worldSize, setWorldSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const slotIndex = useSyncExternalStore(
     activeSlotStore.subscribe,
@@ -258,7 +275,7 @@ export default function GamePage() {
               const petCx = p.x + PET_SIZE / 2;
               const petCy = p.y + PET_SIZE / 2;
               const bedCx = (bed.x ?? 0) + BED_SIZE / 2;
-              const bedCy = (bed.y ?? 0) + BED_SIZE / 2;
+              const bedCy = (bed.y ?? 0) + BED_SIZE / 2 - (PET_SLEEP_OFFSET_Y[p.type] ?? 0);
               const d = Math.hypot(petCx - bedCx, petCy - bedCy);
               // Only the owner can benefit from the bed.
               const sleepRegen = d < 18 ? 1.35 * step : 0.55 * step;
@@ -328,7 +345,7 @@ export default function GamePage() {
               const petCx = p.x + PET_SIZE / 2;
               const petCy = p.y + PET_SIZE / 2;
               const bedCx = bed.x + BED_SIZE / 2;
-              const bedCy = bed.y + BED_SIZE / 2;
+              const bedCy = bed.y + BED_SIZE / 2 - (PET_SLEEP_OFFSET_Y[p.type] ?? 0);
               const dx = bedCx - petCx;
               const dy = bedCy - petCy;
               const d = Math.hypot(dx, dy);
@@ -518,6 +535,14 @@ export default function GamePage() {
     ]);
   }
 
+  function pickUpBed(bedId: string) {
+    updateBeds((prev) => prev.map((b) => (b.id === bedId ? { ...b, x: null, y: null } : b)));
+    setBedContextMenu(null);
+    if (placingBedId === bedId) setPlacingBedId(null);
+    if (movingBedId === bedId) setMovingBedId(null);
+    setPlacingBedWorldPos(null);
+  }
+
   function bedSpriteStyle(color: BedColor, size: number): React.CSSProperties {
     const { col, row } = bedColorToCell(color);
     const pos = bedBackgroundPosition(col, row);
@@ -566,6 +591,10 @@ export default function GamePage() {
       id: makeId("pet"),
       type,
       name: trimmed,
+      birth: {
+        bornAt: Date.now(),
+        owner: userName.trim(),
+      },
       x: Math.random() * Math.max(1, w - PET_SIZE),
       y: Math.random() * Math.max(1, h - PET_SIZE),
       vx: Math.cos(angle) * speed,
@@ -577,7 +606,7 @@ export default function GamePage() {
     };
 
     petStore.update((prev) => [...prev, pet]);
-    return { ok: true as const };
+    return { ok: true as const, petId: pet.id };
   }
 
   function backToMenu() {
@@ -604,13 +633,36 @@ export default function GamePage() {
     if (!rect) return { x: 0, y: 0 };
     const sx = clientX - rect.left;
     const sy = clientY - rect.top;
-    // Inner world group uses translate+scale only when a pet is selected; otherwise transform is "none".
+
+    // IMPORTANT: the inner world group uses a CSS transition on transform.
+    // If we map pointer coordinates using the *target* camera values, we can desync
+    // from the *actual rendered* transform mid-transition, causing "ghost" bed coords.
+    // We instead invert the computed transform matrix applied to the world group.
+    const group = worldGroupRef.current;
+    if (group && typeof window !== "undefined") {
+      const tr = window.getComputedStyle(group).transform;
+      if (tr && tr !== "none") {
+        try {
+          const MatrixCtor: typeof DOMMatrixReadOnly | undefined =
+            (window as unknown as { DOMMatrixReadOnly?: typeof DOMMatrixReadOnly }).DOMMatrixReadOnly;
+          if (MatrixCtor) {
+            const m = new MatrixCtor(tr);
+            const inv = m.inverse();
+            const pt = new DOMPoint(sx, sy);
+            const res = pt.matrixTransform(inv);
+            return { x: res.x, y: res.y };
+          }
+        } catch {
+          // ignore and fall back
+        }
+      }
+    }
+
+    // Fallback: compute from intended transform.
     const tx = selectedPet ? cameraTx : 0;
     const ty = selectedPet ? cameraTy : 0;
     const scale = selectedPet ? cameraScale : 1;
-    const x = (sx - tx) / scale;
-    const y = (sy - ty) / scale;
-    return { x, y };
+    return { x: (sx - tx) / scale, y: (sy - ty) / scale };
   }
 
   function clampBedWorldPos(pos: { x: number; y: number }) {
@@ -700,6 +752,7 @@ export default function GamePage() {
         >
           <div
             className="absolute inset-0"
+            ref={worldGroupRef}
             style={{
               transform: selectedPet
                 ? `translate(${cameraTx}px, ${cameraTy}px) scale(${cameraScale})`
@@ -767,7 +820,7 @@ export default function GamePage() {
                   const petCx = pet.x + PET_SIZE / 2;
                   const petCy = pet.y + PET_SIZE / 2;
                   const bedCx = bed.x + BED_SIZE / 2;
-                  const bedCy = bed.y + BED_SIZE / 2;
+                  const bedCy = bed.y + BED_SIZE / 2 - (PET_SLEEP_OFFSET_Y[pet.type] ?? 0);
                   const d = Math.hypot(petCx - bedCx, petCy - bedCy);
                   if (d > 22) return undefined;
                   return Math.max(0, Math.floor((bed.y ?? 0) - 1) + 2);
@@ -780,7 +833,7 @@ export default function GamePage() {
                   const petCx = pet.x + PET_SIZE / 2;
                   const petCy = pet.y + PET_SIZE / 2;
                   const bedCx = bed.x + BED_SIZE / 2;
-                  const bedCy = bed.y + BED_SIZE / 2;
+                  const bedCy = bed.y + BED_SIZE / 2 - (PET_SLEEP_OFFSET_Y[pet.type] ?? 0);
                   const d = Math.hypot(petCx - bedCx, petCy - bedCy);
                   return d <= 22;
                 })()}
@@ -1246,6 +1299,19 @@ export default function GamePage() {
                         >
                           {placed ? "Recolocar" : "Colocar"}
                         </button>
+                        {placed ? (
+                          <button
+                            type="button"
+                            className="mt-2 h-9 w-full rounded-md border border-emerald-200 bg-white text-sm text-emerald-900 hover:bg-emerald-50"
+                            onClick={() => {
+                              setInventoryOpen(false);
+                              setShopOpen(false);
+                              pickUpBed(bed.id);
+                            }}
+                          >
+                            Recoger
+                          </button>
+                        ) : null}
                       </div>
                     );
                   })
@@ -1268,6 +1334,24 @@ export default function GamePage() {
             style={{ left: bedContextMenu.clientX, top: bedContextMenu.clientY }}
             onClick={(e) => e.stopPropagation()}
           >
+            {(() => {
+              const bed = bedsById.get(bedContextMenu.bedId);
+              const placed = bed?.x != null && bed?.y != null;
+              if (!placed) return null;
+              return (
+                <button
+                  type="button"
+                  className="w-full rounded px-2 py-2 text-left text-sm hover:bg-emerald-50"
+                  onClick={() => {
+                    pickUpBed(bedContextMenu.bedId);
+                    setShopOpen(false);
+                    setInventoryOpen(false);
+                  }}
+                >
+                  Recoger
+                </button>
+              );
+            })()}
             <button
               type="button"
               className="w-full rounded px-2 py-2 text-left text-sm hover:bg-emerald-50"
