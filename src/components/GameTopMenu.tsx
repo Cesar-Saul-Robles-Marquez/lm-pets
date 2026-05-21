@@ -39,7 +39,6 @@ function formatBirthDate(epochMs: number | null | undefined): string {
 
 function PetPhoto({ type, size }: { type: Pet["type"]; size: number }) {
   // First frame (0,0) from 5×5 spritesheet (100×100 frames).
-  const frame = 100;
   return (
     <div
       className="rounded border border-emerald-200 bg-white overflow-hidden"
@@ -52,7 +51,8 @@ function PetPhoto({ type, size }: { type: Pet["type"]; size: number }) {
           height: size,
           backgroundImage: `url(${typeToSheet(type)})`,
           backgroundRepeat: "no-repeat",
-          backgroundSize: `${frame * 5}px ${frame * 5}px`,
+          // Scale the sheet so a single frame fills the container.
+          backgroundSize: `${size * 5}px ${size * 5}px`,
           backgroundPosition: "0px 0px",
           imageRendering: "pixelated",
         }}
@@ -96,12 +96,15 @@ export function GameTopMenu({
   const [certificateOpen, setCertificateOpen] = useState<boolean>(false);
   const [certificatePetId, setCertificatePetId] = useState<string | null>(null);
 
-  const [newType, setNewType] = useState<PetType>("peyo");
+  const petTypeOptions = useMemo(() => ["peyo", "micha", "kiwi"] as PetType[], []);
+  const [createTypeIndex, setCreateTypeIndex] = useState<number>(0);
   const [newName, setNewName] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   const [dragY, setDragY] = useState<number>(0);
   const dragStartY = useRef<number | null>(null);
   const certificateRef = useRef<HTMLDivElement | null>(null);
+
+  const selectedCreateType = petTypeOptions[createTypeIndex] ?? "peyo";
 
   const rows = useMemo(() => {
     const out: Array<Pet | null> = [];
@@ -427,7 +430,7 @@ export function GameTopMenu({
         <div className="absolute inset-0 bg-emerald-950/30" />
 
         <div
-          className="absolute bottom-3 left-1/2 w-[min(92vw,760px)] -translate-x-1/2"
+          className="absolute left-1/2 top-1/2 w-[min(92vw,760px)] -translate-x-1/2 -translate-y-1/2"
           onClick={(e) => e.stopPropagation()}
         >
           <div className="rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-950 shadow-sm">
@@ -445,44 +448,54 @@ export function GameTopMenu({
             <div className="p-4">
               <div className="flex flex-col gap-3">
                 <div className="text-sm font-semibold">Elige especie</div>
-                <div className="flex gap-2 overflow-x-auto pb-1">
-                  {(["peyo", "micha", "kiwi"] as PetType[]).map((t) => {
-                    const active = t === newType;
-                    return (
-                      <button
-                        key={t}
-                        type="button"
-                        onClick={() => setNewType(t)}
-                        className={
-                          "shrink-0 rounded-lg border p-2 text-left " +
-                          (active
-                            ? "border-emerald-500 bg-emerald-50"
-                            : "border-emerald-200 bg-white hover:bg-emerald-50")
-                        }
-                        style={{ width: 170 }}
-                      >
-                        <div className="flex items-center gap-2">
-                          <PetPhoto type={t} size={56} />
-                          <div className="min-w-0">
-                            <div className="text-sm font-semibold text-emerald-950">{typeToLabel(t)}</div>
-                            <div className="text-xs text-emerald-950/70">{t}</div>
-                          </div>
-                        </div>
-                      </button>
-                    );
-                  })}
+                <div className="rounded-lg border border-emerald-200 bg-white p-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setCreateTypeIndex((i) => Math.max(0, i - 1))}
+                      disabled={createTypeIndex <= 0}
+                      className={
+                        "h-10 w-10 rounded-md border border-emerald-200 bg-white text-emerald-900 hover:bg-emerald-50 " +
+                        (createTypeIndex <= 0 ? "opacity-40" : "")
+                      }
+                      aria-label="Anterior"
+                      title="Anterior"
+                    >
+                      ←
+                    </button>
+
+                    <div className="flex flex-col items-center gap-2">
+                      <PetPhoto type={selectedCreateType} size={220} />
+                      <div className="text-base font-semibold text-emerald-950">
+                        {typeToLabel(selectedCreateType)}
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCreateTypeIndex((i) => Math.min(petTypeOptions.length - 1, i + 1))
+                      }
+                      disabled={createTypeIndex >= petTypeOptions.length - 1}
+                      className={
+                        "h-10 w-10 rounded-md border border-emerald-200 bg-white text-emerald-900 hover:bg-emerald-50 " +
+                        (createTypeIndex >= petTypeOptions.length - 1 ? "opacity-40" : "")
+                      }
+                      aria-label="Siguiente"
+                      title="Siguiente"
+                    >
+                      →
+                    </button>
+                  </div>
                 </div>
 
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <div className="grid grid-cols-1 gap-2">
                   <input
                     className="h-10 rounded-md border border-emerald-300 bg-white px-3 text-sm"
                     placeholder="Nombre de la mascota"
                     value={newName}
                     onChange={(e) => setNewName(e.target.value)}
                   />
-                  <div className="flex h-10 items-center rounded-md border border-emerald-200 bg-emerald-50 px-3 text-sm text-emerald-950/80">
-                    Dueño: <span className="ml-2 font-semibold text-emerald-950">{userName}</span>
-                  </div>
                 </div>
 
                 {error ? <div className="text-sm text-red-700">{error}</div> : null}
@@ -493,7 +506,7 @@ export function GameTopMenu({
                     className="h-10 rounded-md bg-emerald-700 px-4 text-sm font-medium text-emerald-50 hover:bg-emerald-600"
                     onClick={() => {
                       setError(null);
-                      const res = onCreatePet(newType, newName);
+                      const res = onCreatePet(selectedCreateType, newName);
                       if (!res.ok) {
                         setError(res.error);
                         return;
