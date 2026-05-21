@@ -18,7 +18,7 @@ import { activeBedsStore, activeInventoryStore, activeSlotStore, activeUserStore
 import { GameTopMenu } from "@/components/GameTopMenu";
 import { PetSprite } from "@/components/PetSprite";
 import { TutorialOverlay } from "@/components/TutorialOverlay";
-import { FOODS, FOOD_SPRITESHEET_URL, type FoodId, feedPetWithFood } from "@/lib/foods";
+import { FOODS, FOOD_SPRITESHEET_URL, type FoodId, feedPetWithFood, getFoodPreference } from "@/lib/foods";
 import { BED_GRID_COLS, BED_GRID_ROWS, BED_SHOP_DEFAULT_COLOR, BED_SPRITESHEET_URL, bedBackgroundPosition, bedColorToCell } from "@/lib/beds";
 import type { Beds, Inventory } from "@/lib/storage";
 
@@ -455,6 +455,99 @@ export default function GamePage() {
     }
   }
 
+  function playNamSound() {
+    if (typeof window === "undefined") return;
+    try {
+      const win = window as unknown as Window & { webkitAudioContext?: typeof AudioContext };
+      const AudioCtx = window.AudioContext || win.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = audioCtxRef.current ?? new AudioCtx();
+      audioCtxRef.current = ctx;
+
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(600, now);
+      osc.frequency.exponentialRampToValueAtTime(800, now + 0.1);
+      osc.frequency.exponentialRampToValueAtTime(600, now + 0.2);
+
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(0.2, now + 0.05);
+      gain.gain.linearRampToValueAtTime(0.0001, now + 0.2);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.2);
+    } catch {}
+  }
+
+  function playMordidasSound() {
+    if (typeof window === "undefined") return;
+    try {
+      const win = window as unknown as Window & { webkitAudioContext?: typeof AudioContext };
+      const AudioCtx = window.AudioContext || win.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = audioCtxRef.current ?? new AudioCtx();
+      audioCtxRef.current = ctx;
+
+      const now = ctx.currentTime;
+      const bufferSize = ctx.sampleRate * 0.1;
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = Math.random() * 2 - 1;
+      }
+      
+      const noise = ctx.createBufferSource();
+      noise.buffer = buffer;
+      
+      const filter = ctx.createBiquadFilter();
+      filter.type = "bandpass";
+      filter.frequency.value = 1000;
+      
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(0.1, now + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.1);
+
+      noise.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      noise.start(now);
+    } catch {}
+  }
+
+  function playPuajSound() {
+    if (typeof window === "undefined") return;
+    try {
+      const win = window as unknown as Window & { webkitAudioContext?: typeof AudioContext };
+      const AudioCtx = window.AudioContext || win.webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = audioCtxRef.current ?? new AudioCtx();
+      audioCtxRef.current = ctx;
+
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      
+      osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(300, now);
+      osc.frequency.exponentialRampToValueAtTime(100, now + 0.2);
+
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(0.15, now + 0.05);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.2);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.2);
+    } catch {}
+  }
+
   function interact(petId: string) {
     setSelectedPetId(petId);
     setFoodWheelOpen(false);
@@ -563,6 +656,18 @@ export default function GamePage() {
     if (count <= 0) return;
 
     if (slotIndex == null) return;
+
+    const pet = petsRef.current.find((p) => p.id === petId);
+    if (pet) {
+      const pref = getFoodPreference(pet.type, foodId);
+      if (pref === "love") {
+        playNamSound();
+      } else if (pref === "like") {
+        playMordidasSound();
+      } else if (pref === "hate") {
+        playPuajSound();
+      }
+    }
 
     const next: Inventory = {
       ...inventory,

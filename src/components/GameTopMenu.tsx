@@ -281,72 +281,55 @@ export function GameTopMenu({
 
   return (
     <div className="fixed left-0 right-0 top-0 z-40">
-      <div className="pointer-events-none absolute left-0 right-0 top-0 flex justify-center pt-2">
-        <button
-          type="button"
-          onClick={() => {
-            setError(null);
-            setDragY(0);
-            setOpen((v) => !v);
-          }}
-          className="pointer-events-auto rounded-full border border-emerald-200 bg-emerald-700 px-4 py-2 text-sm font-medium text-emerald-50 shadow-sm hover:bg-emerald-600"
-        >
-          {open ? "Cerrar" : "Menú"}
-        </button>
-      </div>
-
+      {/* Backdrop */}
       <div
         className={
-          "fixed inset-0 transition-opacity duration-200 " +
+          "fixed inset-0 bg-emerald-950/30 transition-opacity duration-200 " +
           (open ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0")
         }
         onClick={close}
         aria-hidden={!open}
-      >
-        <div className="absolute inset-0 bg-emerald-950/30" />
+      />
 
+      {/* Menu Container */}
+      <div className="pointer-events-none absolute left-1/2 top-0 w-[min(92vw,760px)] -translate-x-1/2">
         <div
-          className="absolute left-1/2 top-0 w-[min(92vw,760px)] -translate-x-1/2"
-          onClick={(e) => e.stopPropagation()}
+          className={
+            "pointer-events-auto relative rounded-b-xl border border-t-0 border-emerald-200 bg-emerald-50 text-emerald-950 shadow-sm transition-transform duration-200 ease-out"
+          }
+          style={{
+            transform: open
+              ? `translateY(${dragY}px)`
+              : "translateY(-100%)",
+          }}
+          onPointerDown={onPanelPointerDown}
+          onPointerMove={onPanelPointerMove}
+          onPointerUp={onPanelPointerUp}
+          onPointerCancel={onPanelPointerUp}
         >
-          <div
-            className={
-              "mt-10 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-950 shadow-sm transition-transform duration-200 ease-out" +
-              (open ? "" : "")
-            }
-            style={{
-              transform: open
-                ? `translateY(${dragY}px)`
-                : "translateY(-110%)",
-            }}
-            onPointerDown={onPanelPointerDown}
-            onPointerMove={onPanelPointerMove}
-            onPointerUp={onPanelPointerUp}
-            onPointerCancel={onPanelPointerUp}
-          >
-            <div className="flex items-center justify-between border-b border-emerald-200 px-4 py-3">
-              <div className="text-sm font-semibold">Usuario: {userName}</div>
+          <div className="flex items-center justify-between border-b border-emerald-200 px-4 py-3">
+            <div className="text-sm font-semibold">Usuario: {userName}</div>
+            <button
+              type="button"
+              onClick={onBack}
+              className="rounded-md border border-emerald-300 bg-white px-3 py-1.5 text-sm text-emerald-900 hover:bg-emerald-100"
+            >
+              Volver al menú
+            </button>
+          </div>
+
+          <div className="max-h-[70vh] overflow-auto p-4">
+            <div className="flex flex-col gap-3">
               <button
                 type="button"
-                onClick={onBack}
-                className="rounded-md border border-emerald-300 bg-white px-3 py-1.5 text-sm text-emerald-900 hover:bg-emerald-100"
+                onClick={() => {
+                  setError(null);
+                  setCreateOpen(true);
+                }}
+                className="h-10 rounded-md bg-emerald-700 px-3 text-sm font-medium text-emerald-50 hover:bg-emerald-600"
               >
-                Volver al menú
+                Crear mascota
               </button>
-            </div>
-
-            <div className="max-h-[70vh] overflow-auto p-4">
-              <div className="flex flex-col gap-3">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setError(null);
-                    setCreateOpen(true);
-                  }}
-                  className="h-10 rounded-md bg-emerald-700 px-3 text-sm font-medium text-emerald-50 hover:bg-emerald-600"
-                >
-                  Crear mascota
-                </button>
 
                 <div className="text-sm font-semibold">Tus mascotas (2×5)</div>
                 <div className="rounded-md border border-emerald-200 bg-white p-3">
@@ -460,9 +443,27 @@ export function GameTopMenu({
                 </div>
               </div>
             </div>
+
+            {/* Pestaña tipo folder/triángulo para abrir/cerrar */}
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setError(null);
+                setDragY(0);
+                setOpen((v) => !v);
+              }}
+              className="absolute -bottom-8 left-1/2 flex h-8 w-24 -translate-x-1/2 items-start justify-center bg-emerald-700 transition-colors hover:bg-emerald-600 focus:outline-none"
+              style={{
+                clipPath: "polygon(0 0, 100% 0, 85% 100%, 15% 100%)", // Forma de pestaña de folder invertida
+              }}
+              aria-label={open ? "Cerrar menú" : "Abrir menú"}
+            >
+              {/* Indicador visual de arrastre (rayitas/puntos) */}
+              <div className="mt-2 h-1 w-8 rounded-full bg-emerald-50/60" />
+            </button>
           </div>
         </div>
-      </div>
 
       {/* Create pet toast */}
       <div
