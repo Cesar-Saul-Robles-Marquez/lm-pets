@@ -165,36 +165,82 @@ export function GameTopMenu({
 
     const pdf = new jsPDF({ orientation: "p", unit: "pt", format: "a4" });
     const pageW = pdf.internal.pageSize.getWidth();
-    const margin = 48;
-    const lineH = 18;
+    const pageH = pdf.internal.pageSize.getHeight();
 
-    const titleY = margin;
+    // Fondo y borde exterior
+    pdf.setFillColor(251, 249, 241); // Cozy warm cream (Crema cálido)
+    pdf.setDrawColor(135, 169, 142); // Sage green (Verde salvia)
+    pdf.setLineWidth(10);
+    pdf.roundedRect(20, 20, pageW - 40, pageH - 40, 15, 15, "FD");
+
+    // Borde interior
+    pdf.setDrawColor(186, 201, 180); // Soft pale olive (Verde oliva claro)
+    pdf.setLineWidth(2);
+    pdf.roundedRect(32, 32, pageW - 64, pageH - 64, 10, 10, "S");
+
+    // Título principal
+    pdf.setTextColor(60, 100, 75); // Deep cozy green (Verde profundo y cálido)
     pdf.setFont("helvetica", "bold");
-    pdf.setFontSize(20);
-    pdf.text("Acta de nacimiento", margin, titleY);
+    pdf.setFontSize(36);
+    pdf.text("Acta de Nacimiento", pageW / 2, 100, { align: "center" });
+
+    // Subtítulo
+    pdf.setTextColor(110, 120, 110);
+    pdf.setFont("helvetica", "italic");
+    pdf.setFontSize(16);
+    pdf.text("Este documento certifica oficialmente la adopción de:", pageW / 2, 140, { align: "center" });
+
+    // Nombre de la mascota
+    pdf.setTextColor(75, 130, 95); // Warm leaf green (Verde hoja cálido)
+    pdf.setFont("times", "bolditalic");
+    pdf.setFontSize(48);
+    pdf.text(pet.name, pageW / 2, 200, { align: "center" });
+
+    // Fotografía / Sprite
+    try {
+      const photo = await spritePhotoDataUrl(pet.type);
+      const imgSize = 250;
+      const imgX = (pageW - imgSize) / 2;
+      const imgY = 230;
+      pdf.addImage(photo, "PNG", imgX, imgY, imgSize, imgSize);
+    } catch {
+      // Si la imagen falla, continuamos
+    }
 
     const bornAt = pet.birth?.bornAt;
     const dateStr = formatBirthDate(bornAt);
     const ownerStr = pet.birth?.owner?.trim() || userName.trim() || "—";
 
+    // Información detallada
+    const infoY = 530;
+    const leftX = pageW / 2 - 10;
+    const lineH = 30;
+
+    pdf.setTextColor(80, 90, 80);
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(14);
+    
+    // Etiquetas (Alineadas a la derecha)
+    pdf.text("Especie:", leftX, infoY, { align: "right" });
+    pdf.text("Fecha de adopción:", leftX, infoY + lineH, { align: "right" });
+    pdf.text("Dueño responsable:", leftX, infoY + lineH * 2, { align: "right" });
+
+    // Valores (Alineados a la izquierda)
     pdf.setFont("helvetica", "normal");
+    pdf.text(` ${typeToLabel(pet.type)}`, leftX, infoY, { align: "left" });
+    pdf.text(` ${dateStr}`, leftX, infoY + lineH, { align: "left" });
+    pdf.text(` ${ownerStr}`, leftX, infoY + lineH * 2, { align: "left" });
+
+    // Área de firma
+    const sigY = 720;
+    pdf.setDrawColor(140, 150, 140); // Gris verdoso para la línea
+    pdf.setLineWidth(1);
+    pdf.line(pageW / 2 - 120, sigY, pageW / 2 + 120, sigY);
+
+    pdf.setTextColor(110, 120, 110);
+    pdf.setFont("helvetica", "italic");
     pdf.setFontSize(12);
-
-    const startY = titleY + 30;
-    const leftX = margin;
-    const rightX = pageW - margin - 220;
-
-    pdf.text(`Especie: ${typeToLabel(pet.type)}`, leftX, startY);
-    pdf.text(`Nombre: ${pet.name}`, leftX, startY + lineH);
-    pdf.text(`Fecha: ${dateStr}`, leftX, startY + lineH * 2);
-    pdf.text(`Dueño: ${ownerStr}`, leftX, startY + lineH * 3);
-
-    try {
-      const photo = await spritePhotoDataUrl(pet.type);
-      pdf.addImage(photo, "PNG", rightX, startY - 6, 200, 200);
-    } catch {
-      // If photo fails, we still export the document.
-    }
+    pdf.text("Firma del Dueño", pageW / 2, sigY + 20, { align: "center" });
 
     const safeName = pet.name.trim().replace(/\s+/g, " ") || "Mascota";
     pdf.save(`Acta-${safeName}.pdf`);
