@@ -25,6 +25,7 @@ import type { Beds, Inventory } from "@/lib/storage";
 const MAX_PETS = 10;
 const PET_SIZE = 100;
 const BED_SIZE = 88;
+const FENCE_SPRITESHEET_URL = "/Recursos/Sprites/fences%20sprites.png?v=20260521";
 const PET_SLEEP_OFFSET_Y: Record<PetType, number> = {
   peyo: 35,
   micha: 35,
@@ -33,6 +34,139 @@ const PET_SLEEP_OFFSET_Y: Record<PetType, number> = {
 const STEP_MS = 16.666; // 60 FPS simulation
 const CAMERA_SCALE_SELECTED = 1.7;
 const FENCE_CAMERA_SCALE = CAMERA_SCALE_SELECTED;
+
+type SpriteRect = { x: number; y: number; w: number; h: number };
+
+function computeFenceRect(w: number, h: number) {
+  const hardMaxX = Math.max(0, w - PET_SIZE);
+  const hardMaxY = Math.max(0, h - PET_SIZE);
+
+  let minX = 0;
+  let maxX = hardMaxX;
+  let minY = 0;
+  let maxY = hardMaxY;
+
+  if (FENCE_CAMERA_SCALE > 1 && w > 0 && h > 0) {
+    const marginCenterX = w / (2 * FENCE_CAMERA_SCALE);
+    const marginCenterY = h / (2 * FENCE_CAMERA_SCALE);
+    const constrainedMinX = marginCenterX - PET_SIZE / 2;
+    const constrainedMaxX = w - marginCenterX - PET_SIZE / 2;
+    const constrainedMinY = marginCenterY - PET_SIZE / 2;
+    const constrainedMaxY = h - marginCenterY - PET_SIZE / 2;
+
+    if (constrainedMaxX >= constrainedMinX) {
+      minX = Math.max(0, constrainedMinX);
+      maxX = Math.min(hardMaxX, constrainedMaxX);
+    }
+    if (constrainedMaxY >= constrainedMinY) {
+      minY = Math.max(0, constrainedMinY);
+      maxY = Math.min(hardMaxY, constrainedMaxY);
+    }
+  }
+
+  return {
+    left: minX,
+    top: minY,
+    right: maxX + PET_SIZE,
+    bottom: maxY + PET_SIZE,
+  };
+}
+
+function findAlphaBounds(
+  data: Uint8ClampedArray,
+  width: number,
+  height: number,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number
+): SpriteRect | null {
+  const minX0 = Math.max(0, Math.min(width, Math.trunc(x0)));
+  const maxX0 = Math.max(0, Math.min(width, Math.trunc(x1)));
+  const minY0 = Math.max(0, Math.min(height, Math.trunc(y0)));
+  const maxY0 = Math.max(0, Math.min(height, Math.trunc(y1)));
+  if (maxX0 <= minX0 || maxY0 <= minY0) return null;
+
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  for (let y = minY0; y < maxY0; y++) {
+    const row = y * width;
+    for (let x = minX0; x < maxX0; x++) {
+      const a = data[(row + x) * 4 + 3];
+      if (!a) continue;
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+  }
+
+  if (!Number.isFinite(minX) || !Number.isFinite(minY)) return null;
+  // +1 because maxX/maxY are inclusive pixel coords.
+  return { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
+}
+
+function computeFenceSlices(img: HTMLImageElement): { h: SpriteRect; v: SpriteRect } {
+  const w = img.naturalWidth || img.width;
+  const h = img.naturalHeight || img.height;
+
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, w);
+  c.height = Math.max(1, h);
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  if (!ctx) {
+    return {
+      h: { x: 0, y: 0, w: Math.max(1, Math.floor(w * 0.7)), h: Math.max(1, Math.floor(h * 0.3)) },
+      v: { x: Math.max(0, Math.floor(w * 0.7)), y: 0, w: Math.max(1, Math.floor(w * 0.3)), h: h },
+    };
+  }
+
+  ctx.clearRect(0, 0, c.width, c.height);
+  ctx.drawImage(img, 0, 0);
+  const imageData = ctx.getImageData(0, 0, c.width, c.height);
+  const pixels = imageData.data;
+
+  // The sheet contains 2 parts: a horizontal segment on the top-left and a vertical segment on the far-right.
+  // Keep windows tight so the bounding box doesn't span both (which would create huge gaps when tiling).
+  const hRegion = findAlphaBounds(
+    pixels,
+    c.width,
+    c.height,
+    0,
+    0,
+    Math.floor(c.width * 0.62),
+    Math.floor(c.height * 0.40)
+  );
+  const vRegion = findAlphaBounds(
+    pixels,
+    c.width,
+    c.height,
+    Math.floor(c.width * 0.80),
+    0,
+    c.width,
+    c.height
+  );
+
+  return {
+    h:
+      hRegion ?? {
+        x: 0,
+        y: 0,
+        w: Math.max(1, Math.floor(c.width * 0.7)),
+        h: Math.max(1, Math.floor(c.height * 0.3)),
+      },
+    v:
+      vRegion ?? {
+        x: Math.max(0, Math.floor(c.width * 0.7)),
+        y: 0,
+        w: Math.max(1, Math.floor(c.width * 0.3)),
+        h: c.height,
+      },
+  };
+}
 
 function polarToCartesian(centerX: number, centerY: number, radius: number, angleInDegrees: number) {
   const angleInRadians = (angleInDegrees - 90) * Math.PI / 180.0;
@@ -100,6 +234,10 @@ export default function GamePage() {
 
   const worldRef = useRef<HTMLDivElement | null>(null);
   const worldGroupRef = useRef<HTMLDivElement | null>(null);
+  const fenceCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const fenceSpriteRef = useRef<HTMLImageElement | null>(null);
+  const fenceSlicesRef = useRef<{ h: SpriteRect; v: SpriteRect } | null>(null);
+  const [fenceRedrawTick, setFenceRedrawTick] = useState<number>(0);
   const [worldSize, setWorldSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const slotIndex = useSyncExternalStore(
     activeSlotStore.subscribe,
@@ -117,6 +255,7 @@ export default function GamePage() {
     petStore.getSnapshot
   );
   const petsRef = useRef<Pet[]>(pets);
+  const [petsHydratedSlotIndex, setPetsHydratedSlotIndex] = useState<number | null>(null);
   const [selectedPetId, setSelectedPetId] = useState<string | null>(null);
 
   const inventory = useSyncExternalStore(
@@ -190,6 +329,101 @@ export default function GamePage() {
   }, []);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    let cancelled = false;
+    const img = new Image();
+    img.src = FENCE_SPRITESHEET_URL;
+    img.onload = () => {
+      if (cancelled) return;
+      fenceSpriteRef.current = img;
+      fenceSlicesRef.current = computeFenceSlices(img);
+      setFenceRedrawTick((v) => v + 1);
+    };
+    img.onerror = () => {
+      if (cancelled) return;
+      fenceSpriteRef.current = null;
+      fenceSlicesRef.current = null;
+      setFenceRedrawTick((v) => v + 1);
+    };
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const canvas = fenceCanvasRef.current;
+    const img = fenceSpriteRef.current;
+    const slices = fenceSlicesRef.current;
+    if (!canvas || !img || !slices) return;
+
+    const w = Math.max(1, Math.round(worldSize.w));
+    const h = Math.max(1, Math.round(worldSize.h));
+    if (w <= 1 || h <= 1) return;
+
+    if (canvas.width !== w) canvas.width = w;
+    if (canvas.height !== h) canvas.height = h;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, w, h);
+    ctx.imageSmoothingEnabled = false;
+
+    const fence = computeFenceRect(w, h);
+    const hTile = slices.h;
+    const vTile = slices.v;
+
+    const fenceLeft = Math.round(fence.left);
+    const fenceTop = Math.round(fence.top);
+    const fenceRight = Math.round(fence.right);
+    const fenceBottom = Math.round(fence.bottom);
+
+    // Top (repeat-x)
+    const topY = fenceTop - hTile.h;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(fenceLeft, topY, Math.max(0, fenceRight - fenceLeft), hTile.h);
+    ctx.clip();
+    for (let x = fenceLeft - hTile.w; x < fenceRight + hTile.w; x += hTile.w) {
+      ctx.drawImage(img, hTile.x, hTile.y, hTile.w, hTile.h, x, topY, hTile.w, hTile.h);
+    }
+    ctx.restore();
+    // Bottom (repeat-x)
+    const bottomY = fenceBottom;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(fenceLeft, bottomY, Math.max(0, fenceRight - fenceLeft), hTile.h);
+    ctx.clip();
+    for (let x = fenceLeft - hTile.w; x < fenceRight + hTile.w; x += hTile.w) {
+      ctx.drawImage(img, hTile.x, hTile.y, hTile.w, hTile.h, x, bottomY, hTile.w, hTile.h);
+    }
+    ctx.restore();
+
+    // Left (repeat-y)
+    const leftX = fenceLeft - vTile.w;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(leftX, fenceTop, vTile.w, Math.max(0, fenceBottom - fenceTop));
+    ctx.clip();
+    for (let y = fenceTop - vTile.h; y < fenceBottom + vTile.h; y += vTile.h) {
+      ctx.drawImage(img, vTile.x, vTile.y, vTile.w, vTile.h, leftX, y, vTile.w, vTile.h);
+    }
+    ctx.restore();
+    // Right (repeat-y)
+    const rightX = fenceRight;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(rightX, fenceTop, vTile.w, Math.max(0, fenceBottom - fenceTop));
+    ctx.clip();
+    for (let y = fenceTop - vTile.h; y < fenceBottom + vTile.h; y += vTile.h) {
+      ctx.drawImage(img, vTile.x, vTile.y, vTile.w, vTile.h, rightX, y, vTile.w, vTile.h);
+    }
+    ctx.restore();
+  }, [fenceRedrawTick, worldSize.h, worldSize.w]);
+
+  useEffect(() => {
     petsRef.current = pets;
   }, [pets]);
 
@@ -206,14 +440,21 @@ export default function GamePage() {
       router.replace("/");
       return;
     }
+    // IMPORTANT:
+    // Do not persist pets until we've hydrated them from localStorage.
+    // In dev (React StrictMode), mount effects can run twice with the *initial render*
+    // closure values (often pets=[]), which could otherwise wipe existing saves.
+    setPetsHydratedSlotIndex(null);
     petStore.setPets(getPetsForSlot(slotIndex).map(normalizePet));
+    setPetsHydratedSlotIndex(slotIndex);
   }, [router, slotIndex, userName]);
 
   useEffect(() => {
     if (!userName) return;
     if (slotIndex == null) return;
+    if (petsHydratedSlotIndex !== slotIndex) return;
     setPetsForSlot(slotIndex, pets);
-  }, [slotIndex, userName, pets]);
+  }, [petsHydratedSlotIndex, slotIndex, userName, pets]);
 
   useEffect(() => {
     if (!userName) return;
@@ -232,6 +473,12 @@ export default function GamePage() {
       const w = rect?.width ?? 900;
       const h = rect?.height ?? 520;
       const nowEpoch = Date.now();
+
+      const fenceRect = computeFenceRect(w, h);
+      const minX = fenceRect.left;
+      const maxX = Math.max(minX, fenceRect.right - PET_SIZE);
+      const minY = fenceRect.top;
+      const maxY = Math.max(minY, fenceRect.bottom - PET_SIZE);
 
       const bedsNow = bedsRef.current;
       const bedByOwner = new Map<string, Bed>();
@@ -366,34 +613,6 @@ export default function GamePage() {
           const moodFactor = p.mood === "walk" || p.mood === "sleep" ? 1 : 0.35;
           let x = p.x + vx * step * moodFactor;
           let y = p.y + vy * step * moodFactor;
-
-          const hardMaxX = Math.max(0, w - PET_SIZE);
-          const hardMaxY = Math.max(0, h - PET_SIZE);
-
-          // Fence: keep pets inside a safe perimeter so a selected pet can stay centered
-          // under zoom without revealing empty edges.
-          let minX = 0;
-          let maxX = hardMaxX;
-          let minY = 0;
-          let maxY = hardMaxY;
-
-          if (FENCE_CAMERA_SCALE > 1 && w > 0 && h > 0) {
-            const marginCenterX = w / (2 * FENCE_CAMERA_SCALE);
-            const marginCenterY = h / (2 * FENCE_CAMERA_SCALE);
-            const constrainedMinX = marginCenterX - PET_SIZE / 2;
-            const constrainedMaxX = w - marginCenterX - PET_SIZE / 2;
-            const constrainedMinY = marginCenterY - PET_SIZE / 2;
-            const constrainedMaxY = h - marginCenterY - PET_SIZE / 2;
-
-            if (constrainedMaxX >= constrainedMinX) {
-              minX = Math.max(0, constrainedMinX);
-              maxX = Math.min(hardMaxX, constrainedMaxX);
-            }
-            if (constrainedMaxY >= constrainedMinY) {
-              minY = Math.max(0, constrainedMinY);
-              maxY = Math.min(hardMaxY, constrainedMaxY);
-            }
-          }
 
           if (x < minX) {
             x = minX;
@@ -689,6 +908,12 @@ export default function GamePage() {
     const w = rect?.width ?? 900;
     const h = rect?.height ?? 520;
 
+    const fence = computeFenceRect(w, h);
+    const minX = fence.left;
+    const maxX = Math.max(minX, fence.right - PET_SIZE);
+    const minY = fence.top;
+    const maxY = Math.max(minY, fence.bottom - PET_SIZE);
+
     const speed = 50 + Math.random() * 60;
     const angle = Math.random() * Math.PI * 2;
 
@@ -700,8 +925,8 @@ export default function GamePage() {
         bornAt: Date.now(),
         owner: userName.trim(),
       },
-      x: Math.random() * Math.max(1, w - PET_SIZE),
-      y: Math.random() * Math.max(1, h - PET_SIZE),
+      x: minX + Math.random() * Math.max(1, maxX - minX),
+      y: minY + Math.random() * Math.max(1, maxY - minY),
       vx: Math.cos(angle) * speed,
       vy: Math.sin(angle) * speed,
       energy: 100,
@@ -771,11 +996,14 @@ export default function GamePage() {
   }
 
   function clampBedWorldPos(pos: { x: number; y: number }) {
-    const maxX = Math.max(0, w - BED_SIZE);
-    const maxY = Math.max(0, h - BED_SIZE);
+    const fence = computeFenceRect(w, h);
+    const minX = fence.left;
+    const maxX = Math.max(minX, fence.right - BED_SIZE);
+    const minY = fence.top;
+    const maxY = Math.max(minY, fence.bottom - BED_SIZE);
     return {
-      x: clamp(pos.x, 0, maxX),
-      y: clamp(pos.y, 0, maxY),
+      x: clamp(pos.x, minX, maxX),
+      y: clamp(pos.y, minY, maxY),
     };
   }
 
@@ -867,6 +1095,13 @@ export default function GamePage() {
               willChange: "transform",
             }}
           >
+            <canvas
+              ref={fenceCanvasRef}
+              className="absolute inset-0 pointer-events-none"
+              style={{ imageRendering: "pixelated" }}
+              aria-hidden="true"
+            />
+
             {beds
               .filter((b) => b.x != null && b.y != null)
               .map((bed) => (
