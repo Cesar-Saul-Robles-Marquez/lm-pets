@@ -33,3 +33,12 @@ body {
     background-position-x: var(--anim-end, -500px);
   }
 }
+
+@keyframes cooldownFill {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}

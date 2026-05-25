@@ -34,6 +34,27 @@ const PET_SLEEP_OFFSET_Y: Record<PetType, number> = {
 const STEP_MS = 16.666; // 60 FPS simulation
 const CAMERA_SCALE_SELECTED = 1.7;
 const FENCE_CAMERA_SCALE = CAMERA_SCALE_SELECTED;
+const PETTING_COOLDOWN_MS = 3000;
+const SLEEP_DURATION_MS = 30_000;
+
+function statBand(v: number) {
+  if (v <= 30) return 0; // red
+  if (v <= 59) return 1; // yellow
+  return 2; // green
+}
+
+function computeSleepTargetEnergy(moodStat: number, satiation: number) {
+  const a = statBand(moodStat);
+  const b = statBand(satiation);
+  const minBand = Math.min(a, b);
+  const maxBand = Math.max(a, b);
+  if (minBand === 0 && maxBand === 0) return 30;
+  if (minBand === 0) return 45; // red + (yellow|green)
+  if (minBand === 1 && maxBand === 1) return 60;
+  if (minBand === 1 && maxBand === 2) return 80;
+  return 100; // green + green
+}
+const WAKE_HUNGER_PENALTY = 5; // -5% saciedad al despertar
 
 type SpriteRect = { x: number; y: number; w: number; h: number };
 
@@ -193,9 +214,10 @@ function describeArc(x: number, y: number, radius: number, startAngle: number, e
 
 function StatBar({ value }: { value: number }) {
   const v = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
+  const fillClass = v <= 30 ? "bg-red-600" : v <= 59 ? "bg-amber-500" : "bg-emerald-700";
   return (
     <div className="h-2 w-full overflow-hidden rounded-full bg-emerald-100">
-      <div className="h-full bg-emerald-700" style={{ width: `${v}%` }} />
+      <div className={`h-full ${fillClass}`} style={{ width: `${v}%` }} />
     </div>
   );
 }
@@ -255,7 +277,7 @@ export default function GamePage() {
     petStore.getSnapshot
   );
   const petsRef = useRef<Pet[]>(pets);
-  const [petsHydratedSlotIndex, setPetsHydratedSlotIndex] = useState<number | null>(null);
+  const petsHydratedSlotIndexRef = useRef<number | null>(null);
   const [selectedPetId, setSelectedPetId] = useState<string | null>(null);
 
   const inventory = useSyncExternalStore(
@@ -294,13 +316,25 @@ export default function GamePage() {
   const foodWheelRef = useRef<HTMLDivElement | null>(null);
   const foodWheelPointerIdRef = useRef<number | null>(null);
 
-  const audioCtxRef = useRef<AudioContext | null>(null);
+  const [pettingCooldownById, setPettingCooldownById] = useState<Record<string, boolean>>({});
+  const [pettingCooldownTokenById, setPettingCooldownTokenById] = useState<Record<string, number>>({});
+  const pettingCooldownTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
+  const audioCtxRef = useRef<AudioContext | null>(null);
   const [tutorialDismissed, setTutorialDismissed] = useState<boolean>(false);
   const [tutorialStep, setTutorialStep] = useState<number>(0);
 
   const tutorialOpen =
     slotIndex != null ? !tutorialDismissed && !getTutorialSeenForSlot(slotIndex) : false;
+
+  useEffect(() => {
+    const timers = pettingCooldownTimersRef.current;
+    return () => {
+      for (const t of Object.values(timers)) {
+        clearTimeout(t);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     const el = worldRef.current;
@@ -350,7 +384,6 @@ export default function GamePage() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -444,17 +477,17 @@ export default function GamePage() {
     // Do not persist pets until we've hydrated them from localStorage.
     // In dev (React StrictMode), mount effects can run twice with the *initial render*
     // closure values (often pets=[]), which could otherwise wipe existing saves.
-    setPetsHydratedSlotIndex(null);
+    petsHydratedSlotIndexRef.current = null;
     petStore.setPets(getPetsForSlot(slotIndex).map(normalizePet));
-    setPetsHydratedSlotIndex(slotIndex);
+    petsHydratedSlotIndexRef.current = slotIndex;
   }, [router, slotIndex, userName]);
 
   useEffect(() => {
     if (!userName) return;
     if (slotIndex == null) return;
-    if (petsHydratedSlotIndex !== slotIndex) return;
+    if (petsHydratedSlotIndexRef.current !== slotIndex) return;
     setPetsForSlot(slotIndex, pets);
-  }, [petsHydratedSlotIndex, slotIndex, userName, pets]);
+  }, [slotIndex, userName, pets]);
 
   useEffect(() => {
     if (!userName) return;
@@ -499,6 +532,13 @@ export default function GamePage() {
           if (p.moodUntil && p.moodUntil <= nowEpoch) {
             const { moodUntil: moodUntilToClear, ...rest } = p;
             void moodUntilToClear;
+            if (p.mood === "sleep") {
+              const satiation = clamp(100 - (p.hunger ?? 0), 0, 100);
+              const sleepTargetEnergy = computeSleepTargetEnergy(p.moodStat ?? 0, satiation);
+              // Wake up hungry (simulate breakfast urge).
+              const hunger = clamp((p.hunger ?? 0) + WAKE_HUNGER_PENALTY, 0, 100);
+              return { ...rest, mood: "walk" as const, hunger, energy: sleepTargetEnergy };
+            }
             return { ...rest, mood: "walk" as const };
           }
           return p;
@@ -510,47 +550,36 @@ export default function GamePage() {
           let moodStat = p.moodStat;
 
           // Simple life-sim stats, adjusted for dt (step in seconds)
-          // 0.16 per second to match old 0.008 per 50ms
-          const hungerRate = 0.16 * step;
-          hunger = clamp(hunger + hungerRate, 0, 100);
-          
-          const energyRate = 0.1 * step;
-          // Sleeping should recover energy; otherwise energy slowly drains.
           if (p.mood === "sleep") {
-            const bed = bedByOwner.get(p.id);
-            if (bed) {
-              const petCx = p.x + PET_SIZE / 2;
-              const petCy = p.y + PET_SIZE / 2;
-              const bedCx = (bed.x ?? 0) + BED_SIZE / 2;
-              const bedCy = (bed.y ?? 0) + BED_SIZE / 2 - (PET_SLEEP_OFFSET_Y[p.type] ?? 0);
-              const d = Math.hypot(petCx - bedCx, petCy - bedCy);
-              // Only the owner can benefit from the bed.
-              const sleepRegen = d < 18 ? 1.35 * step : 0.55 * step;
-              energy = clamp(energy + sleepRegen, 0, 100);
-            } else {
-              energy = clamp(energy + 0.45 * step, 0, 100);
-            }
+            // While sleeping: humor + saciedad stay stable.
+            const satiation = clamp(100 - hunger, 0, 100);
+            const targetEnergy = computeSleepTargetEnergy(moodStat ?? 0, satiation);
+            const startEpoch = p.moodUntil ? p.moodUntil - SLEEP_DURATION_MS : nowEpoch;
+            const t = clamp((nowEpoch - startEpoch) / SLEEP_DURATION_MS, 0, 1);
+            energy = clamp(targetEnergy * t, 0, targetEnergy);
           } else {
+            // Awake: hunger increases; energy drains; mood trends down with penalties.
+            const hungerRate = 0.16 * step;
+            hunger = clamp(hunger + hungerRate, 0, 100);
+
+            const energyRate = 0.1 * step;
             energy = clamp(energy - energyRate, 0, 100);
+
+            const hungryPenalty = hunger > 70 ? 0.3 * step : 0;
+            const tiredPenalty = energy < 30 ? 0.24 * step : 0;
+            const baseline = 0.04 * step;
+
+            moodStat = clamp(moodStat - (baseline + hungryPenalty + tiredPenalty), 0, 100);
+            if (p.mood === "happy") moodStat = clamp(moodStat + 0.6 * step, 0, 100);
           }
-
-          const hungryPenalty = hunger > 70 ? 0.3 * step : 0;
-          const tiredPenalty = energy < 30 ? 0.24 * step : 0;
-          const baseline = 0.04 * step;
-
-          moodStat = clamp(moodStat - (baseline + hungryPenalty + tiredPenalty), 0, 100);
-          if (p.mood === "happy") moodStat = clamp(moodStat + 0.6 * step, 0, 100);
 
           return { ...p, energy, hunger, moodStat };
         });
 
-        // Auto-sleep: low energy forces sleep until recovered.
+        // Auto-sleep: low energy forces a fixed 30s sleep.
         next = next.map((p) => {
-          if (p.energy <= 18) {
-            return p.mood === "sleep" ? p : { ...p, mood: "sleep" as const, moodUntil: undefined };
-          }
-          if (p.mood === "sleep" && p.energy >= 65) {
-            return { ...p, mood: "walk" as const };
+          if (p.energy <= 0 && p.mood !== "sleep") {
+            return { ...p, mood: "sleep" as const, moodUntil: nowEpoch + SLEEP_DURATION_MS };
           }
           return p;
         });
@@ -569,6 +598,8 @@ export default function GamePage() {
           for (let j = i + 1; j < next.length; j++) {
             const a = next[i];
             const b = next[j];
+            // Don't wake sleeping pets early.
+            if (a.mood === "sleep" || b.mood === "sleep") continue;
             const dx = a.x - b.x;
             const dy = a.y - b.y;
             const d2 = dx * dx + dy * dy;
@@ -717,6 +748,7 @@ export default function GamePage() {
       const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
       const data = buffer.getChannelData(0);
       for (let i = 0; i < bufferSize; i++) {
+        // eslint-disable-next-line react-hooks/purity
         data[i] = Math.random() * 2 - 1;
       }
       
@@ -767,27 +799,66 @@ export default function GamePage() {
     } catch {}
   }
 
-  function interact(petId: string) {
+  function selectPet(petId: string) {
     setSelectedPetId(petId);
     setFoodWheelOpen(false);
+    setFoodWheelHover(null);
+    playApproachSound();
+  }
+
+  function petSelected() {
+    const petId = selectedPetId;
+    if (!petId) return;
+    if (pettingCooldownById[petId]) return;
+
+    setPettingCooldownById((prev) => ({
+      ...prev,
+      [petId]: true,
+    }));
+
+    setPettingCooldownTokenById((prev) => ({
+      ...prev,
+      [petId]: (prev[petId] ?? 0) + 1,
+    }));
+
+    const prevTimer = pettingCooldownTimersRef.current[petId];
+    if (prevTimer) clearTimeout(prevTimer);
+    pettingCooldownTimersRef.current[petId] = setTimeout(() => {
+      setPettingCooldownById((prev) => ({
+        ...prev,
+        [petId]: false,
+      }));
+    }, PETTING_COOLDOWN_MS);
+
+    setFoodWheelOpen(false);
+    setFoodWheelHover(null);
     petStore.update((prev) =>
       prev.map((p) =>
         p.id === petId
           ? {
               ...setMood(p, "happy", 1200),
               moodStat: clamp((p.moodStat ?? 70) + 10, 0, 100),
-              energy: clamp((p.energy ?? 100) - 2, 0, 100),
             }
           : p
       )
     );
   }
 
-  function selectPet(petId: string) {
-    setSelectedPetId(petId);
-    setFoodWheelOpen(false);
-    setFoodWheelHover(null);
-    playApproachSound();
+  function sleepSelected() {
+    const petId = selectedPetId;
+    if (!petId) return;
+    petStore.update((prev) =>
+      prev.map((p) =>
+        p.id === petId
+          ? {
+              ...p,
+              energy: 0,
+              mood: "sleep" as const,
+              moodUntil: Date.now() + SLEEP_DURATION_MS,
+            }
+          : p
+      )
+    );
   }
 
   function computeFoodWheelHoverFromPointer(ev: React.PointerEvent): FoodId | null {
@@ -1027,8 +1098,21 @@ export default function GamePage() {
         pets={pets}
         selectedPetId={selectedPetId}
         onSelectPet={(petId) => setSelectedPetId(petId)}
+        onDrainEnergy={(petId) => {
+          petStore.update((prev) =>
+            prev.map((p) =>
+              p.id === petId
+                ? {
+                    ...p,
+                    energy: 0,
+                    mood: "sleep" as const,
+                    moodUntil: Date.now() + SLEEP_DURATION_MS,
+                  }
+                : p
+            )
+          );
+        }}
         onCreatePet={createPet}
-        onInteract={interact}
         onBack={backToMenu}
         maxRows={MAX_PETS}
       />
@@ -1181,78 +1265,156 @@ export default function GamePage() {
               />
             ))}
 
-            {/* Food icon + radial menu next to selected pet */}
+            {/* Action buttons (pet + food) next to selected pet */}
             {selectedPet ? (
               <div
                 className="absolute"
                 style={{
                   left: 0,
                   top: 0,
-                  transform: `translate3d(${selectedPet.x - 60}px, ${selectedPet.y - 20}px, 0)`,
+                  transform: `translate3d(${selectedPet.x - 142}px, ${selectedPet.y - 20}px, 0)`,
                   transition: "transform 80ms linear",
                   willChange: "transform",
                 }}
               >
-                <button
-                  type="button"
-                  className="relative z-10 h-9 w-9 rounded-full border border-emerald-200 bg-white text-emerald-900 shadow-sm hover:bg-emerald-50"
-                  onPointerDown={(ev) => {
-                    if (availableFoods.length === 0) {
-                      setFoodWheelOpen(true);
-                      setFoodWheelHover(null);
-                    } else {
-                      setFoodWheelOpen(true);
-                      const hovered = computeFoodWheelHoverFromPointer(ev);
-                      setFoodWheelHover(hovered);
-                    }
-                    foodWheelPointerIdRef.current = ev.pointerId;
-                    (ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId);
-                    ev.preventDefault();
-                    ev.stopPropagation();
-                  }}
-                  onPointerMove={(ev) => {
-                    if (!foodWheelOpen) return;
-                    if (foodWheelPointerIdRef.current !== ev.pointerId) return;
-                    const hovered = computeFoodWheelHoverFromPointer(ev);
-                    setFoodWheelHover(hovered);
-                  }}
-                  onPointerUp={(ev) => {
-                    if (foodWheelPointerIdRef.current !== ev.pointerId) return;
-                    foodWheelPointerIdRef.current = null;
-                    const chosen = computeFoodWheelHoverFromPointer(ev) ?? foodWheelHover;
-                    setFoodWheelOpen(false);
-                    setFoodWheelHover(null);
-                    if (chosen) feedSelected(chosen);
-                    ev.preventDefault();
-                    ev.stopPropagation();
-                  }}
-                  onPointerCancel={() => {
-                    foodWheelPointerIdRef.current = null;
-                    setFoodWheelOpen(false);
-                    setFoodWheelHover(null);
-                  }}
-                  aria-label="Comida"
-                  title="Comida"
-                >
-                  <svg
-                    viewBox="0 0 24 24"
-                    width="18"
-                    height="18"
-                    className="mx-auto"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    aria-hidden="true"
-                  >
-                    <path d="M17 10c.7-.7 1.69 0 2.5 0a2.5 2.5 0 1 0 0-5 .5.5 0 0 1-.5-.5 2.5 2.5 0 1 0-5 0c0 .81.7 1.8 0 2.5l-5.3 5.3c-.7.7-1.69 0-2.5 0a2.5 2.5 0 0 0 0 5c0 .28.22.5.5.5a2.5 2.5 0 1 0 5 0c0-.81-.7-1.8 0-2.5l5.3-5.3Z" />
-                  </svg>
-                </button>
+                <div className="flex items-center gap-2">
+                  {(() => {
+                    const petId = selectedPetId;
+                    const coolingDown = petId ? Boolean(pettingCooldownById[petId]) : false;
+                    const disabled = !petId || coolingDown || selectedPet.mood === "sleep";
+                    const token = petId ? (pettingCooldownTokenById[petId] ?? 0) : 0;
+                    return (
+                      <button
+                        type="button"
+                        className={
+                          "relative z-10 h-9 w-9 overflow-hidden rounded-full border border-emerald-200 bg-white text-emerald-900 shadow-sm " +
+                          (disabled ? "opacity-50 cursor-not-allowed" : "hover:bg-emerald-50")
+                        }
+                        disabled={disabled}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          petSelected();
+                        }}
+                        aria-label="Acariciar"
+                      >
+                        {coolingDown ? (
+                          <div
+                            key={token}
+                            className="absolute inset-0 bg-emerald-100"
+                            style={{
+                              transformOrigin: "0% 50%",
+                              animation: `cooldownFill ${PETTING_COOLDOWN_MS}ms linear forwards`,
+                            }}
+                            aria-hidden="true"
+                          />
+                        ) : null}
+                        <svg
+                          viewBox="0 0 24 24"
+                          width="18"
+                          height="18"
+                          className="relative z-10 mx-auto"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          aria-hidden="true"
+                        >
+                          <path d="M7 11V7.8a1.3 1.3 0 0 1 2.6 0V11" />
+                          <path d="M9.6 11V6.8a1.3 1.3 0 0 1 2.6 0V11" />
+                          <path d="M12.2 11V7.4a1.3 1.3 0 0 1 2.6 0V11" />
+                          <path d="M14.8 11V8.4a1.3 1.3 0 0 1 2.6 0V15c0 2.8-1.8 5-4.8 5H10c-2.2 0-3.6-1.2-4.4-2.6l-1.4-2.6a1.5 1.5 0 0 1 2.6-1.5L8 12.7" />
+                        </svg>
+                      </button>
+                    );
+                  })()}
 
-                {foodWheelOpen ? (
-                  <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50">
-                    <div ref={foodWheelRef} className="relative h-48 w-48 drop-shadow-2xl" style={{ pointerEvents: 'none' }}>
+                  <button
+                    type="button"
+                    className={
+                      "relative z-10 h-9 w-9 rounded-full border border-emerald-200 bg-white text-[11px] font-bold text-emerald-900 shadow-sm " +
+                      (selectedPet.mood === "sleep" ? "opacity-50 cursor-not-allowed" : "hover:bg-emerald-50")
+                    }
+                    disabled={selectedPet.mood === "sleep"}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      sleepSelected();
+                    }}
+                    aria-label="Dormir"
+                  >
+                    zzz
+                  </button>
+
+                  <div className="relative">
+                    <button
+                      type="button"
+                      className={
+                        "relative z-10 h-9 w-9 rounded-full border border-emerald-200 bg-white text-emerald-900 shadow-sm " +
+                        (selectedPet.mood === "sleep" ? "opacity-50 cursor-not-allowed" : "hover:bg-emerald-50")
+                      }
+                      disabled={selectedPet.mood === "sleep"}
+                      onPointerDown={(ev) => {
+                        if (selectedPet.mood === "sleep") return;
+                        if (availableFoods.length === 0) {
+                          setFoodWheelOpen(true);
+                          setFoodWheelHover(null);
+                        } else {
+                          setFoodWheelOpen(true);
+                          const hovered = computeFoodWheelHoverFromPointer(ev);
+                          setFoodWheelHover(hovered);
+                        }
+                        foodWheelPointerIdRef.current = ev.pointerId;
+                        (ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId);
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                      }}
+                      onPointerMove={(ev) => {
+                        if (selectedPet.mood === "sleep") return;
+                        if (!foodWheelOpen) return;
+                        if (foodWheelPointerIdRef.current !== ev.pointerId) return;
+                        const hovered = computeFoodWheelHoverFromPointer(ev);
+                        setFoodWheelHover(hovered);
+                      }}
+                      onPointerUp={(ev) => {
+                        if (selectedPet.mood === "sleep") return;
+                        if (foodWheelPointerIdRef.current !== ev.pointerId) return;
+                        foodWheelPointerIdRef.current = null;
+                        const chosen = computeFoodWheelHoverFromPointer(ev) ?? foodWheelHover;
+                        setFoodWheelOpen(false);
+                        setFoodWheelHover(null);
+                        if (chosen) feedSelected(chosen);
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                      }}
+                      onPointerCancel={() => {
+                        foodWheelPointerIdRef.current = null;
+                        setFoodWheelOpen(false);
+                        setFoodWheelHover(null);
+                      }}
+                      aria-label="Comida"
+                      title="Comida"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        width="18"
+                        height="18"
+                        className="mx-auto"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M17 10c.7-.7 1.69 0 2.5 0a2.5 2.5 0 1 0 0-5 .5.5 0 0 1-.5-.5 2.5 2.5 0 1 0-5 0c0 .81.7 1.8 0 2.5l-5.3 5.3c-.7.7-1.69 0-2.5 0a2.5 2.5 0 0 0 0 5c0 .28.22.5.5.5a2.5 2.5 0 1 0 5 0c0-.81-.7-1.8 0-2.5l5.3-5.3Z" />
+                      </svg>
+                    </button>
+
+                    {foodWheelOpen ? (
+                      <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-50">
+                        <div ref={foodWheelRef} className="relative h-48 w-48 drop-shadow-2xl" style={{ pointerEvents: 'none' }}>
                       <svg viewBox="0 0 240 240" className="absolute inset-0 w-full h-full">
                         <defs>
                           <mask id="gta-hole">
@@ -1334,7 +1496,9 @@ export default function GamePage() {
                       )}
                     </div>
                   </div>
-                ) : null}
+                    ) : null}
+                  </div>
+                </div>
               </div>
             ) : null}
           </div>
@@ -1372,10 +1536,10 @@ export default function GamePage() {
 
             <div>
               <div className="flex items-center justify-between">
-                <span>Hambre</span>
-                <span className="text-emerald-950/70">{Math.round(selectedPet.hunger ?? 0)}</span>
+                <span>Saciado</span>
+                <span className="text-emerald-950/70">{Math.round(100 - (selectedPet.hunger ?? 0))}</span>
               </div>
-              <StatBar value={selectedPet.hunger ?? 0} />
+              <StatBar value={100 - (selectedPet.hunger ?? 0)} />
             </div>
           </div>
         </div>

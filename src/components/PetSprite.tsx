@@ -37,18 +37,14 @@ function getSpriteConfig() {
   };
 }
 
-export function PetSprite({
-  pet,
-  onClick,
-  zIndexOverride,
-  sleepingInBed,
-}: {
+export function PetSprite(props: {
   pet: Pet;
   onClick: () => void;
   zIndexOverride?: number;
   sleepingInBed?: boolean;
 }) {
-  const visualMood: PetMood = sleepingInBed && pet.mood === "sleep" ? "sleep" : pet.hunger >= 50 ? "hungry" : pet.mood;
+  const { pet, onClick, zIndexOverride } = props;
+  const visualMood: PetMood = pet.mood === "sleep" ? "sleep" : pet.hunger >= 50 ? "hungry" : pet.mood;
   const row = moodToRow(visualMood);
   const { sheetWidth, sheetHeight, frameWidth, frameHeight, frames } = getSpriteConfig();
   const spriteScale = pet.type === "kiwi" ? 0.47 : 1;

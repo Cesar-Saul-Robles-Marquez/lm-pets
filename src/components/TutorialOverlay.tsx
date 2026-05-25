@@ -18,7 +18,7 @@ export function TutorialOverlay({
     },
     {
       title: "Tutorial (2/3)",
-      body: "Haz click en una mascota para interactuar (se pondrá feliz).",
+      body: "Haz click en una mascota para seleccionarla y usa el botón de acariciar (cooldown 3s) para ponerla feliz.",
     },
     {
       title: "Tutorial (3/3)",

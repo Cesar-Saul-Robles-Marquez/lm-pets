@@ -63,9 +63,10 @@ function PetPhoto({ type, size }: { type: Pet["type"]; size: number }) {
 
 function StatBar({ value }: { value: number }) {
   const v = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
+  const fillClass = v <= 30 ? "bg-red-600" : v <= 59 ? "bg-amber-500" : "bg-emerald-700";
   return (
     <div className="h-2 w-full overflow-hidden rounded-full bg-emerald-100">
-      <div className="h-full bg-emerald-700" style={{ width: `${v}%` }} />
+      <div className={`h-full ${fillClass}`} style={{ width: `${v}%` }} />
     </div>
   );
 }
@@ -75,8 +76,8 @@ export function GameTopMenu({
   pets,
   selectedPetId,
   onSelectPet,
+  onDrainEnergy,
   onCreatePet,
-  onInteract,
   onBack,
   maxRows = 10,
 }: {
@@ -84,10 +85,10 @@ export function GameTopMenu({
   pets: Pet[];
   selectedPetId: string | null;
   onSelectPet: (petId: string) => void;
+  onDrainEnergy?: (petId: string) => void;
   onCreatePet: (type: PetType, name: string) =>
     | { ok: true; petId: string }
     | { ok: false; error: string };
-  onInteract: (petId: string) => void;
   onBack: () => void;
   maxRows?: number;
 }) {
@@ -351,43 +352,56 @@ export function GameTopMenu({
                         >
                           {pet ? (
                             <div className="flex flex-col gap-2">
-                              <button
-                                type="button"
-                                className="flex items-center gap-2 rounded-md border border-emerald-200 bg-white p-1.5 text-left hover:bg-emerald-50"
-                                onClick={() => onSelectPet(pet.id)}
-                                title="Seleccionar mascota"
-                              >
-                                <div
-                                  className="shrink-0 rounded border border-emerald-200 bg-white flex items-center justify-center overflow-hidden"
-                                  style={{ width: 48, height: 48 }}
-                                  aria-hidden="true"
+                              <div className="flex items-stretch gap-2">
+                                <button
+                                  type="button"
+                                  className="flex flex-1 items-center gap-2 rounded-md border border-emerald-200 bg-white p-1.5 text-left hover:bg-emerald-50"
+                                  onClick={() => onSelectPet(pet.id)}
+                                  aria-label="Seleccionar mascota"
                                 >
                                   <div
-                                    style={{
-                                      width: 48,
-                                      height: 48,
-                                      backgroundImage: `url(${typeToSheet(pet.type)})`,
-                                      backgroundRepeat: "no-repeat",
-                                      backgroundSize: `${48 * 5}px ${48 * 5}px`,
-                                      backgroundPosition: "0px 0px",
-                                      imageRendering: "pixelated",
-                                    }}
-                                  />
-                                </div>
-                                <div className="min-w-0">
-                                  <div className="truncate text-xs font-semibold text-emerald-950">
-                                    {pet.name}
+                                    className="shrink-0 rounded border border-emerald-200 bg-white flex items-center justify-center overflow-hidden"
+                                    style={{ width: 48, height: 48 }}
+                                    aria-hidden="true"
+                                  >
+                                    <div
+                                      style={{
+                                        width: 48,
+                                        height: 48,
+                                        backgroundImage: `url(${typeToSheet(pet.type)})`,
+                                        backgroundRepeat: "no-repeat",
+                                        backgroundSize: `${48 * 5}px ${48 * 5}px`,
+                                        backgroundPosition: "0px 0px",
+                                        imageRendering: "pixelated",
+                                      }}
+                                    />
                                   </div>
-                                  <div className="text-[11px] text-emerald-950/70">
-                                    {pet.type}
-                                  </div>
-                                  {isSelected ? (
-                                    <div className="text-[11px] font-medium text-emerald-700">
-                                      Seleccionada
+                                  <div className="min-w-0">
+                                    <div className="truncate text-xs font-semibold text-emerald-950">
+                                      {pet.name}
                                     </div>
-                                  ) : null}
-                                </div>
-                              </button>
+                                    <div className="text-[11px] text-emerald-950/70">
+                                      {pet.type}
+                                    </div>
+                                    {isSelected ? (
+                                      <div className="text-[11px] font-medium text-emerald-700">
+                                        Seleccionada
+                                      </div>
+                                    ) : null}
+                                  </div>
+                                </button>
+
+                                {onDrainEnergy ? (
+                                  <button
+                                    type="button"
+                                    className="h-auto w-11 shrink-0 rounded-md border border-emerald-200 bg-white text-xs font-semibold text-emerald-900 hover:bg-emerald-50"
+                                    onClick={() => onDrainEnergy(pet.id)}
+                                    aria-label="Drenar energía"
+                                  >
+                                    zzz
+                                  </button>
+                                ) : null}
+                              </div>
 
                               <div className="flex flex-col gap-1 text-[11px] text-emerald-950">
                                 <div className="flex items-center justify-between gap-2">
@@ -407,21 +421,13 @@ export function GameTopMenu({
                                 <StatBar value={pet.moodStat} />
 
                                 <div className="flex items-center justify-between gap-2">
-                                  <span>Hambre</span>
+                                  <span>Saciado</span>
                                   <span className="text-emerald-950/70">
-                                    {Math.round(pet.hunger)}
+                                    {Math.round(100 - (pet.hunger ?? 0))}
                                   </span>
                                 </div>
-                                <StatBar value={pet.hunger} />
+                                <StatBar value={100 - (pet.hunger ?? 0)} />
                               </div>
-
-                              <button
-                                type="button"
-                                className="mt-1 h-8 rounded-md border border-emerald-300 bg-white text-xs text-emerald-900 hover:bg-emerald-100"
-                                onClick={() => onInteract(pet.id)}
-                              >
-                                Interactuar
-                              </button>
 
                               <button
                                 type="button"
